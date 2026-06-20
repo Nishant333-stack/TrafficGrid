@@ -11,9 +11,12 @@ from backend.optimization.allocation import effective_barricades, effective_pers
 from backend.geo.road_graph import graph_cache_metrics
 
 
-APP_ROOT = Path(__file__).resolve().parent
-LOCAL_FEEDBACK_PATH = APP_ROOT / "feedback_log.jsonl"
-TRAINING_CACHE_PATH = APP_ROOT / "models" / "training_events_preprocessed.parquet"
+from backend.config.paths import PROJECT_ROOT
+
+
+APP_ROOT = PROJECT_ROOT
+LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
+TRAINING_CACHE_PATH = PROJECT_ROOT / "backend" / "ml" / "models" / "training_events_preprocessed.parquet"
 MAX_REASONABLE_DURATION_MINUTES = 24 * 60
 
 

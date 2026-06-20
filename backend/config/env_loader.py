@@ -3,14 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
-APP_ROOT = Path(__file__).resolve().parent
+from backend.config.paths import PROJECT_ROOT
 
 
 def load_project_env(env_path: str | Path | None = None) -> None:
     """Load simple KEY=VALUE pairs from .env without overriding shell variables."""
 
-    path = Path(env_path) if env_path else APP_ROOT / ".env"
+    path = Path(env_path) if env_path else PROJECT_ROOT / ".env"
     if not path.exists():
         return
 

@@ -22,8 +22,11 @@ from backend.ml.predict import predict_impact
 
 load_project_env()
 
-APP_ROOT = Path(__file__).resolve().parent
-PLANNED_EVENTS_PATH = APP_ROOT / "planned_events_seed.json"
+from backend.config.paths import PROJECT_ROOT
+
+
+APP_ROOT = PROJECT_ROOT
+PLANNED_EVENTS_PATH = PROJECT_ROOT / "planned_events_seed.json"
 SEED_SOURCE = "seed_feedback"
 DEFAULT_ROWS = 40
 

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
-const WS_BASE = API_BASE.replace(/^http/, "ws");
+const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (import.meta.env.PROD ? "" : "http://127.0.0.1:8000");
+const WS_BASE = (API_BASE || window.location.origin).replace(/^http/, "ws");
 const BENGALURU_CENTER = [12.9716, 77.5946];
 const TIMELINE_STATES = ["T-24h", "T-2h", "Live", "T+2h"];
 const FIELD_STATION = "Cubbon Park";

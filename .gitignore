@@ -15,6 +15,9 @@ node_modules/
 # Cache directories
 cache/
 graph_cache/
+backend/ml/models/
+models/
+dist/
 
 # Coverage and testing
 .coverage

@@ -11,4 +11,5 @@ osmnx>=1.9,<3
 ortools>=9.10,<10
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
+gunicorn>=22.0,<24
 pydantic>=2.7,<3

@@ -9,11 +9,14 @@ from typing import Any
 from uuid import uuid4
 
 
-APP_ROOT = Path(__file__).resolve().parent
-AUDIT_LOG_PATH = APP_ROOT / "audit_log.jsonl"
-PLAN_WORKFLOW_PATH = APP_ROOT / "plan_workflows.jsonl"
-FIELD_STATUS_PATH = APP_ROOT / "field_status_log.jsonl"
-LOCAL_FEEDBACK_PATH = APP_ROOT / "feedback_log.jsonl"
+from backend.config.paths import PROJECT_ROOT
+
+
+APP_ROOT = PROJECT_ROOT
+AUDIT_LOG_PATH = PROJECT_ROOT / "audit_log.jsonl"
+PLAN_WORKFLOW_PATH = PROJECT_ROOT / "plan_workflows.jsonl"
+FIELD_STATUS_PATH = PROJECT_ROOT / "field_status_log.jsonl"
+LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
 
 
 def utc_now() -> str:

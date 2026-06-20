@@ -12,7 +12,7 @@ from backend.config.env_loader import load_project_env
 
 load_project_env()
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/grid_matplotlib")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/grid_matplotlib")
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 warnings.filterwarnings(
     "ignore",

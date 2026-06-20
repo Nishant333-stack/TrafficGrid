@@ -11,12 +11,15 @@ from typing import Any
 import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.config.env_loader import load_project_env
+from backend.config.paths import FRONTEND_DIST, PROJECT_ROOT
 
 
 load_project_env()
@@ -55,10 +58,10 @@ from backend.data.workflow import (
 )
 
 
-APP_ROOT = Path(__file__).resolve().parent
-PLANNED_EVENTS_PATH = APP_ROOT / "planned_events_seed.json"
-LOCAL_FEEDBACK_PATH = APP_ROOT / "feedback_log.jsonl"
-HISTORICAL_CACHE_PATH = APP_ROOT / "models" / "training_events_preprocessed.parquet"
+APP_ROOT = PROJECT_ROOT
+PLANNED_EVENTS_PATH = PROJECT_ROOT / "planned_events_seed.json"
+LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
+HISTORICAL_CACHE_PATH = PROJECT_ROOT / "backend" / "ml" / "models" / "training_events_preprocessed.parquet"
 
 EVENT_COLUMNS = """
     id,
@@ -121,6 +124,24 @@ class FieldStatusRequest(BaseModel):
     photo_url: str | None = None
 
 
+def cors_allow_origins() -> list[str]:
+    origins = [
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ]
+    extra = os.environ.get("CORS_ALLOW_ORIGINS", "")
+    if extra:
+        origins.extend(part.strip() for part in extra.split(",") if part.strip())
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if render_url:
+        origins.append(render_url.rstrip("/"))
+    return origins
+
+
 app = FastAPI(
     title="Bengaluru Traffic Forecasting MVP API",
     version="0.4.0",
@@ -128,14 +149,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -190,6 +204,14 @@ def require_roles(*allowed_roles: str):
     return dependency
 
 
+def normalize_database_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://") and "+psycopg2" not in url:
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
 def get_engine() -> Engine | None:
     global _engine, _engine_error
     database_url = os.environ.get("DATABASE_URL")
@@ -197,7 +219,7 @@ def get_engine() -> Engine | None:
         return None
     if _engine is None:
         try:
-            candidate = create_engine(database_url, future=True)
+            candidate = create_engine(normalize_database_url(database_url), future=True)
             with candidate.connect() as connection:
                 connection.execute(text("SELECT 1"))
             _engine = candidate
@@ -989,7 +1011,7 @@ def get_api_root() -> dict[str, Any]:
         "status": "running",
         "docs": "/docs",
         "health": "/platform/health",
-        "dashboard": "http://127.0.0.1:5173/",
+        "dashboard": "/app/",
     }
 
 
@@ -1261,3 +1283,20 @@ async def websocket_live(websocket: WebSocket) -> None:
             await asyncio.sleep(5)
     except WebSocketDisconnect:
         return
+
+
+if FRONTEND_DIST.is_dir():
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/app/{full_path:path}")
+    def serve_frontend_app(full_path: str = "") -> FileResponse:
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    @app.get("/app")
+    def serve_frontend_root() -> FileResponse:
+        return FileResponse(FRONTEND_DIST / "index.html")

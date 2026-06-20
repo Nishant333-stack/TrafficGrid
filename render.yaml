@@ -1,0 +1,35 @@
+databases:
+  - name: trafficguide-db
+    plan: free
+    databaseName: trafficguide
+    user: trafficguide
+
+services:
+  - type: web
+    name: trafficguide
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /platform/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trafficguide-db
+          property: connectionString
+      - key: ROAD_GRAPH_MODE
+        value: demo
+      - key: MODEL_DIR
+        value: /app/backend/ml/models
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: GUNICORN_TIMEOUT
+        value: "120"
+      - key: FORECAST_CACHE_TTL_SECONDS
+        value: "300"
+      - key: PLAN_CACHE_TTL_SECONDS
+        value: "600"
+      - key: ACTIVE_EVENT_INCLUDE_DEMO_FEEDS
+        value: "true"
+      - key: PYTHON_VERSION
+        value: "3.11.9"

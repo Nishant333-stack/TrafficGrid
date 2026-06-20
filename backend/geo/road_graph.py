@@ -244,6 +244,14 @@ def get_graph(
 ) -> nx.MultiDiGraph:
     """Return a cached drivable Bengaluru OSM graph, downloading only on cache miss."""
 
+    if os.environ.get("ROAD_GRAPH_MODE", "").lower() in {"demo", "1", "true", "yes"}:
+        demo_path = cache_demo_graph()
+        record_cache_metric("requests")
+        graph = _load_graph(demo_path)
+        graph.graph["cache_status"] = "fresh"
+        graph.graph["route_graph_scope"] = "demo"
+        return graph
+
     record_cache_metric("requests")
     path = graph_cache_path(cache_path)
     requested_bbox = bbox or parse_bbox()
