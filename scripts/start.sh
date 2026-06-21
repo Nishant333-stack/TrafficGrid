@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 echo "Initializing database..."
 python scripts/init_db.py
