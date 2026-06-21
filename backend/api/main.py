@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.config.env_loader import load_project_env
+from backend.config.db import get_engine
 from backend.config.paths import FRONTEND_DIST, PROJECT_ROOT
 
 
@@ -60,7 +61,6 @@ from backend.data.workflow import (
 
 APP_ROOT = PROJECT_ROOT
 PLANNED_EVENTS_PATH = PROJECT_ROOT / "planned_events_seed.json"
-LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
 HISTORICAL_CACHE_PATH = PROJECT_ROOT / "backend" / "ml" / "models" / "training_events_preprocessed.parquet"
 
 EVENT_COLUMNS = """
@@ -155,7 +155,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_engine: Engine | None = None
 _engine_error: str | None = None
 STARTED_AT = datetime.now(UTC)
 REQUEST_STATS = {
@@ -212,25 +211,6 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-def get_engine() -> Engine | None:
-    global _engine, _engine_error
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        return None
-    if _engine is None:
-        try:
-            candidate = create_engine(normalize_database_url(database_url), future=True)
-            with candidate.connect() as connection:
-                connection.execute(text("SELECT 1"))
-            _engine = candidate
-            _engine_error = None
-        except SQLAlchemyError as exc:
-            _engine = None
-            _engine_error = exc.__class__.__name__
-            return None
-    return _engine
-
-
 @app.middleware("http")
 async def observe_requests(request: Request, call_next):
     start = time.perf_counter()
@@ -278,7 +258,26 @@ def parse_datetime(value: Any) -> datetime | None:
 
 
 def load_planned_events() -> list[dict[str, Any]]:
-    return json.loads(PLANNED_EVENTS_PATH.read_text(encoding="utf-8"))
+    engine = get_engine()
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT * FROM events WHERE event_type = 'planned'"))
+        events = []
+        for r in result:
+            events.append({
+                "id": r.id,
+                "name": r.address,
+                "latitude": r.latitude,
+                "longitude": r.longitude,
+                "scheduled_start": r.start_datetime.isoformat() if r.start_datetime else None,
+                "event_cause": r.event_cause,
+                "corridor": r.corridor,
+                "zone": r.zone,
+                "police_station": r.police_station,
+                "veh_type": r.veh_type,
+                "priority": r.priority,
+            })
+        return events
 
 
 def scheduled_start_value(event: dict[str, Any]) -> Any:
@@ -308,8 +307,6 @@ def row_mapping_to_features(row: dict[str, Any]) -> dict[str, Any]:
 
 def lookup_db_event(event_id: str) -> dict[str, Any] | None:
     engine = get_engine()
-    if engine is None:
-        return None
     query = text(f"SELECT {EVENT_COLUMNS} FROM events WHERE id = :event_id")
     with engine.connect() as connection:
         row = connection.execute(query, {"event_id": event_id}).mappings().first()
@@ -374,8 +371,6 @@ def remember_value(cache: dict[str, tuple[float, dict[str, Any]]], key: str, val
 
 def active_events() -> list[dict[str, Any]]:
     engine = get_engine()
-    if engine is None:
-        return jsonable(live_incidents())
     cutoff = datetime.now(UTC) - timedelta(days=ACTIVE_EVENT_LOOKBACK_DAYS) if ACTIVE_EVENT_LOOKBACK_DAYS else None
     date_filter = "AND start_datetime >= :cutoff" if cutoff else ""
     query = text(
@@ -439,16 +434,17 @@ def hour_distance(left: int, right: int) -> float:
 
 def load_historical_events() -> pd.DataFrame:
     engine = get_engine()
-    if engine is not None:
-        query = text(
-            f"""
-            SELECT {EVENT_COLUMNS}
-            FROM events
-            WHERE event_cause IS NOT NULL
-               OR corridor IS NOT NULL
-            """
-        )
-        return pd.read_sql_query(query, engine)
+    query = text(
+        f"""
+        SELECT {EVENT_COLUMNS}
+        FROM events
+        WHERE event_cause IS NOT NULL
+           OR corridor IS NOT NULL
+        """
+    )
+    df = pd.read_sql_query(query, engine)
+    if not df.empty:
+        return df
 
     if HISTORICAL_CACHE_PATH.exists():
         return pd.read_parquet(HISTORICAL_CACHE_PATH)
@@ -553,21 +549,6 @@ def ensure_feedback_schema(engine: Engine) -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
-
-
-def local_feedback_rows() -> list[dict[str, Any]]:
-    if not LOCAL_FEEDBACK_PATH.exists():
-        return []
-    rows = []
-    for line in LOCAL_FEEDBACK_PATH.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
-
-
-def append_local_feedback(row: dict[str, Any]) -> None:
-    with LOCAL_FEEDBACK_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(jsonable(row)) + "\n")
 
 
 def plan_for_feedback(
@@ -676,57 +657,40 @@ def write_feedback(event_id: str, payload: FeedbackRequest) -> dict[str, Any]:
     created_at = datetime.now(UTC)
 
     engine = get_engine()
-    if engine is not None:
-        ensure_feedback_schema(engine)
-        with engine.begin() as connection:
-            ensure_event_row_for_feedback(connection, event_id, event)
-            connection.execute(
-                text(
-                    """
-                    INSERT INTO feedback (
-                        event_id,
-                        predicted_severity,
-                        predicted_duration_minutes,
-                        actual_duration_minutes,
-                        officer_rating,
-                        plan_accepted,
-                        adjusted_personnel,
-                        plan_total_personnel,
-                        plan_json,
-                        event_name,
-                        created_at
-                    )
-                    VALUES (
-                        :event_id,
-                        :predicted_severity,
-                        :predicted_duration_minutes,
-                        :actual_duration_minutes,
-                        :officer_rating,
-                        :plan_accepted,
-                        :adjusted_personnel,
-                        :plan_total_personnel,
-                        CAST(:plan_json AS JSONB),
-                        :event_name,
-                        :created_at
-                    )
-                    """
-                ),
-                {
-                    "event_id": event_id,
-                    "predicted_severity": forecast["severity_label"],
-                    "predicted_duration_minutes": predicted_duration,
-                    "actual_duration_minutes": payload.actual_duration_minutes,
-                    "officer_rating": payload.officer_rating,
-                    "plan_accepted": payload.accepted,
-                    "adjusted_personnel": payload.adjusted_personnel,
-                    "plan_total_personnel": plan_total,
-                    "plan_json": json.dumps(jsonable(plan_json)),
-                    "event_name": event.get("name") or event.get("event_cause") or event_id,
-                    "created_at": created_at,
-                },
-            )
-    else:
-        append_local_feedback(
+    ensure_feedback_schema(engine)
+    with engine.begin() as connection:
+        ensure_event_row_for_feedback(connection, event_id, event)
+        connection.execute(
+            text(
+                """
+                INSERT INTO feedback (
+                    event_id,
+                    predicted_severity,
+                    predicted_duration_minutes,
+                    actual_duration_minutes,
+                    officer_rating,
+                    plan_accepted,
+                    adjusted_personnel,
+                    plan_total_personnel,
+                    plan_json,
+                    event_name,
+                    created_at
+                )
+                VALUES (
+                    :event_id,
+                    :predicted_severity,
+                    :predicted_duration_minutes,
+                    :actual_duration_minutes,
+                    :officer_rating,
+                    :plan_accepted,
+                    :adjusted_personnel,
+                    :plan_total_personnel,
+                    CAST(:plan_json AS JSONB),
+                    :event_name,
+                    :created_at
+                )
+                """
+            ),
             {
                 "event_id": event_id,
                 "predicted_severity": forecast["severity_label"],
@@ -736,10 +700,10 @@ def write_feedback(event_id: str, payload: FeedbackRequest) -> dict[str, Any]:
                 "plan_accepted": payload.accepted,
                 "adjusted_personnel": payload.adjusted_personnel,
                 "plan_total_personnel": plan_total,
-                "plan_json": jsonable(plan_json),
+                "plan_json": json.dumps(jsonable(plan_json)),
                 "event_name": event.get("name") or event.get("event_cause") or event_id,
-                "created_at": created_at.isoformat(),
-            }
+                "created_at": created_at,
+            },
         )
 
     audit_log(

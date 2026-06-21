@@ -8,34 +8,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import text
 
 from backend.config.paths import PROJECT_ROOT
-
+from backend.config.db import get_engine
 
 APP_ROOT = PROJECT_ROOT
-AUDIT_LOG_PATH = PROJECT_ROOT / "audit_log.jsonl"
-PLAN_WORKFLOW_PATH = PROJECT_ROOT / "plan_workflows.jsonl"
-FIELD_STATUS_PATH = PROJECT_ROOT / "field_status_log.jsonl"
-LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
-
-
-def append_jsonl(path: Path, row: dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, default=str) + "\n")
 
 
 def audit_log(
@@ -56,7 +38,28 @@ def audit_log(
         "resource_id": resource_id,
         "details": details or {},
     }
-    append_jsonl(AUDIT_LOG_PATH, row)
+    
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO audit_log (audit_id, tenant_id, actor, action, resource_type, resource_id, details, created_at)
+                VALUES (:audit_id, :tenant_id, :actor, :action, :resource_type, :resource_id, CAST(:details AS JSONB), :created_at)
+                """
+            ),
+            {
+                "audit_id": row["audit_id"],
+                "tenant_id": row["tenant_id"],
+                "actor": row["actor"],
+                "action": row["action"],
+                "resource_type": row["resource_type"],
+                "resource_id": row["resource_id"],
+                "details": json.dumps(row["details"]),
+                "created_at": row["created_at"],
+            },
+        )
+        
     return row
 
 
@@ -83,17 +86,55 @@ def create_plan_record(
         "plan": plan,
         "comment": "Plan created",
     }
-    append_jsonl(PLAN_WORKFLOW_PATH, row)
+    
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO plan_workflows (plan_id, event_id, version, status, tenant_id, actor, approval_chain, plan_json, comment, created_at)
+                VALUES (:plan_id, :event_id, :version, :status, :tenant_id, :actor, CAST(:approval_chain AS JSONB), CAST(:plan_json AS JSONB), :comment, :created_at)
+                """
+            ),
+            {
+                "plan_id": row["plan_id"],
+                "event_id": row["event_id"],
+                "version": row["version"],
+                "status": row["status"],
+                "tenant_id": row["tenant_id"],
+                "actor": row["actor"],
+                "approval_chain": json.dumps(row["approval_chain"]),
+                "plan_json": json.dumps(row["plan"]),
+                "comment": row["comment"],
+                "created_at": row["created_at"],
+            },
+        )
     audit_log("plan.created", actor, tenant_id, "plan", plan_id, {"event_id": event_id})
     return row
 
 
 def plan_history(plan_id: str) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in read_jsonl(PLAN_WORKFLOW_PATH)
-        if row.get("plan_id") == plan_id
-    ]
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM plan_workflows WHERE plan_id = :plan_id ORDER BY version ASC"),
+            {"plan_id": plan_id}
+        )
+        rows = []
+        for r in result:
+            rows.append({
+                "plan_id": r.plan_id,
+                "event_id": r.event_id,
+                "version": r.version,
+                "status": r.status,
+                "tenant_id": r.tenant_id,
+                "actor": r.actor,
+                "approval_chain": r.approval_chain,
+                "plan": r.plan_json,
+                "comment": r.comment,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
 
 
 def latest_plan_version(plan_id: str) -> dict[str, Any] | None:
@@ -140,7 +181,29 @@ def update_plan_approval(
             break
         chain.append(step_copy)
     next_row["approval_chain"] = chain or latest.get("approval_chain", [])
-    append_jsonl(PLAN_WORKFLOW_PATH, next_row)
+    
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO plan_workflows (plan_id, event_id, version, status, tenant_id, actor, approval_chain, plan_json, comment, created_at)
+                VALUES (:plan_id, :event_id, :version, :status, :tenant_id, :actor, CAST(:approval_chain AS JSONB), CAST(:plan_json AS JSONB), :comment, :created_at)
+                """
+            ),
+            {
+                "plan_id": next_row["plan_id"],
+                "event_id": next_row["event_id"],
+                "version": next_row["version"],
+                "status": next_row["status"],
+                "tenant_id": next_row["tenant_id"],
+                "actor": next_row["actor"],
+                "approval_chain": json.dumps(next_row["approval_chain"]),
+                "plan_json": json.dumps(next_row["plan"]),
+                "comment": next_row["comment"],
+                "created_at": next_row["created_at"],
+            },
+        )
     audit_log(
         f"plan.{next_status}",
         actor,
@@ -178,7 +241,31 @@ def record_field_status(
         "note": note,
         "photo_url": photo_url,
     }
-    append_jsonl(FIELD_STATUS_PATH, row)
+    
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO field_status_updates (status_id, tenant_id, actor, station, event_id, control_point_node_id, status, latitude, longitude, note, photo_url, created_at)
+                VALUES (:status_id, :tenant_id, :actor, :station, :event_id, :control_point_node_id, :status, :lat, :lon, :note, :photo_url, :created_at)
+                """
+            ),
+            {
+                "status_id": row["status_id"],
+                "tenant_id": row["tenant_id"],
+                "actor": row["actor"],
+                "station": row["station"],
+                "event_id": row["event_id"],
+                "control_point_node_id": str(row["control_point_node_id"]) if row["control_point_node_id"] else None,
+                "status": row["status"],
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "note": row["note"],
+                "photo_url": row["photo_url"],
+                "created_at": row["created_at"],
+            },
+        )
     audit_log(
         "field.status",
         actor,
@@ -191,20 +278,81 @@ def record_field_status(
 
 
 def feedback_rows() -> list[dict[str, Any]]:
-    return read_jsonl(LOCAL_FEEDBACK_PATH)
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT * FROM feedback ORDER BY created_at ASC"))
+        rows = []
+        for r in result:
+            rows.append({
+                "id": r.id,
+                "event_id": r.event_id,
+                "predicted_severity": r.predicted_severity,
+                "predicted_duration_minutes": r.predicted_duration_minutes,
+                "actual_duration_minutes": r.actual_duration_minutes,
+                "officer_rating": r.officer_rating,
+                "plan_accepted": r.plan_accepted,
+                "adjusted_personnel": r.adjusted_personnel,
+                "plan_total_personnel": r.plan_total_personnel,
+                "plan_json": r.plan_json,
+                "seed_source": r.seed_source,
+                "event_name": r.event_name,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
+
+
+def _get_workflow_rows(event_id: str) -> list[dict[str, Any]]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM plan_workflows WHERE event_id = :event_id ORDER BY version ASC"),
+            {"event_id": event_id}
+        )
+        rows = []
+        for r in result:
+            rows.append({
+                "plan_id": r.plan_id,
+                "event_id": r.event_id,
+                "version": r.version,
+                "status": r.status,
+                "tenant_id": r.tenant_id,
+                "actor": r.actor,
+                "approval_chain": r.approval_chain,
+                "plan": r.plan_json,
+                "comment": r.comment,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
+    
+def _get_status_rows(event_id: str) -> list[dict[str, Any]]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM field_status_updates WHERE event_id = :event_id ORDER BY created_at ASC"),
+            {"event_id": event_id}
+        )
+        rows = []
+        for r in result:
+            rows.append({
+                "status_id": r.status_id,
+                "tenant_id": r.tenant_id,
+                "actor": r.actor,
+                "station": r.station,
+                "event_id": r.event_id,
+                "control_point_node_id": r.control_point_node_id,
+                "status": r.status,
+                "lat": r.latitude,
+                "lon": r.longitude,
+                "note": r.note,
+                "photo_url": r.photo_url,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
 
 
 def sla_summary(event_id: str) -> dict[str, Any]:
-    versions = [
-        row
-        for row in read_jsonl(PLAN_WORKFLOW_PATH)
-        if str(row.get("event_id")) == str(event_id)
-    ]
-    statuses = [
-        row
-        for row in read_jsonl(FIELD_STATUS_PATH)
-        if str(row.get("event_id")) == str(event_id)
-    ]
+    versions = _get_workflow_rows(event_id)
+    statuses = _get_status_rows(event_id)
     if not versions:
         return {
             "event_id": event_id,
@@ -238,21 +386,13 @@ def sla_summary(event_id: str) -> dict[str, Any]:
 
 
 def after_action_report(event_id: str) -> dict[str, Any]:
-    plans = [
-        row
-        for row in read_jsonl(PLAN_WORKFLOW_PATH)
-        if str(row.get("event_id")) == str(event_id)
-    ]
+    plans = _get_workflow_rows(event_id)
     feedback = [
         row
         for row in feedback_rows()
         if str(row.get("event_id")) == str(event_id)
     ]
-    statuses = [
-        row
-        for row in read_jsonl(FIELD_STATUS_PATH)
-        if str(row.get("event_id")) == str(event_id)
-    ]
+    statuses = _get_status_rows(event_id)
     latest_plan = max(plans, key=lambda row: int(row.get("version") or 0), default=None)
     return {
         "event_id": event_id,
