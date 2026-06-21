@@ -94,7 +94,9 @@ def main() -> None:
     load_project_env()
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        raise ValueError("DATABASE_URL environment variable is required but not set.")
+        print("WARNING: DATABASE_URL is not set. Skipping database initialization.", flush=True)
+        print("The application will fail at runtime if no database is available.", flush=True)
+        return
     engine = apply_schema(database_url)
     seed_planned_events(engine)
 

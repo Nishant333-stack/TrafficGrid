@@ -5,11 +5,10 @@ cd "$(dirname "$0")/.."
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 echo "Initializing database..."
-python scripts/init_db.py
-echo "Database initialized."
+python scripts/init_db.py || echo "WARNING: Database initialization failed."
 
 echo "Seeding feedback data..."
-python -m backend.data.seed_feedback --rows 40 || echo "Feedback seeding skipped (may already exist)."
+python -m backend.data.seed_feedback --rows 40 || echo "Feedback seeding skipped."
 
 python -m backend.ml.bootstrap_models
 python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()"
