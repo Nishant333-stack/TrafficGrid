@@ -816,23 +816,7 @@ def db_metrics_summary(engine: Engine) -> dict[str, Any]:
 
 def metrics_summary() -> dict[str, Any]:
     engine = get_engine()
-    if engine is not None:
-        return db_metrics_summary(engine)
-
-    local_rows = local_feedback_rows()
-    active_ids = {str(event["id"]) for event in active_events()}
-    total_personnel = sum(
-        int(row.get("adjusted_personnel") or row.get("plan_total_personnel") or 0)
-        for row in local_rows
-        if row.get("plan_accepted") is True
-        and str(row.get("event_id")) in active_ids
-    )
-    return {
-        "active_incident_count": len(active_events()),
-        "planned_events_today": planned_events_today(),
-        "total_personnel_deployed": total_personnel,
-        "forecast_accuracy_30d": feedback_accuracy_from_rows(local_rows),
-    }
+    return db_metrics_summary(engine)
 
 
 def parse_plan_json(value: Any) -> dict[str, Any] | None:
@@ -907,40 +891,29 @@ def station_assignments_from_feedback_rows(
 
 def field_assignments(station_name: str = "Cubbon Park") -> dict[str, Any]:
     engine = get_engine()
-    if engine is not None:
-        ensure_feedback_schema(engine)
-        with engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    """
-                    SELECT
-                        event_id,
-                        plan_json,
-                        event_name,
-                        created_at
-                    FROM feedback
-                    WHERE plan_accepted IS TRUE
-                        AND plan_json IS NOT NULL
-                    ORDER BY created_at DESC
-                    LIMIT 50
-                    """
-                )
-            ).mappings().all()
-        return station_assignments_from_feedback_rows([dict(row) for row in rows], station_name)
-
-    rows = [
-        row
-        for row in local_feedback_rows()
-        if row.get("plan_accepted") is True and row.get("plan_json")
-    ]
-    rows.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
-    return station_assignments_from_feedback_rows(rows, station_name)
+    ensure_feedback_schema(engine)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT
+                    event_id,
+                    plan_json,
+                    event_name,
+                    created_at
+                FROM feedback
+                WHERE plan_accepted IS TRUE
+                    AND plan_json IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 50
+                """
+            )
+        ).mappings().all()
+    return station_assignments_from_feedback_rows([dict(row) for row in rows], station_name)
 
 
 def feedback_rows_for_roi() -> list[dict[str, Any]] | None:
     engine = get_engine()
-    if engine is None:
-        return None
     ensure_feedback_schema(engine)
     with engine.connect() as connection:
         rows = connection.execute(
