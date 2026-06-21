@@ -3,7 +3,7 @@ import L from "leaflet";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE ??
-  (import.meta.env.PROD ? "" : "http://127.0.0.1:8000");
+  (import.meta.env.PROD ? "" : "");
 const WS_BASE = (API_BASE || window.location.origin).replace(/^http/, "ws");
 const BENGALURU_CENTER = [12.9716, 77.5946];
 const TIMELINE_STATES = ["T-24h", "T-2h", "Live", "T+2h"];
@@ -381,7 +381,7 @@ function FieldPage() {
           <span>{t.title}</span>
           <h1>{officer.station}</h1>
         </div>
-        <a href="/" aria-label="Open command console">Console</a>
+        <a href="./" aria-label="Open command console">Console</a>
       </header>
 
       <form className="field-login" onSubmit={saveLogin}>
@@ -747,7 +747,7 @@ function DetailDrawer({
 }
 
 function App() {
-  if (window.location.pathname === "/field") {
+  if (window.location.pathname.endsWith("/field")) {
     return <FieldPage />;
   }
 
@@ -1184,7 +1184,7 @@ function App() {
           <span>Central Zone 1</span>
         </div>
         <div className="top-status">
-          <a className="field-link" href="/field">Field view</a>
+          <a className="field-link" href="field">Field view</a>
           <span className={`connection-pill ${apiStatus}`}>{apiStatus}</span>
           <time>{formatClock(clock)} IST</time>
         </div>

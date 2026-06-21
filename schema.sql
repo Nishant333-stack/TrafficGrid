@@ -1,4 +1,5 @@
-CREATE EXTENSION IF NOT EXISTS postgis;
+-- PostGIS is optional; skip if not available
+-- CREATE EXTENSION IF NOT EXISTS postgis;
 
 CREATE TABLE IF NOT EXISTS tenants (
     id TEXT PRIMARY KEY,
@@ -45,16 +46,9 @@ CREATE TABLE IF NOT EXISTS events (
     resolved_datetime TIMESTAMPTZ,
     zone TEXT,
     junction TEXT,
-    duration_minutes INTEGER,
-    geom geometry(Point, 4326) GENERATED ALWAYS AS (
-        CASE
-            WHEN latitude IS NULL OR longitude IS NULL THEN NULL
-            ELSE ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)
-        END
-    ) STORED
+    duration_minutes INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_geom ON events USING GIST (geom);
 CREATE INDEX IF NOT EXISTS idx_events_zone ON events (zone);
 CREATE INDEX IF NOT EXISTS idx_events_police_station ON events (police_station);
 CREATE INDEX IF NOT EXISTS idx_events_start_datetime ON events (start_datetime);
