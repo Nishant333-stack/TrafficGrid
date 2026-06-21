@@ -38,5 +38,5 @@ RUN python -m backend.ml.bootstrap_models \
 
 RUN chmod +x scripts/start.sh
 
-EXPOSE 8000
+EXPOSE 10000
 CMD ["bash", "scripts/start.sh"]

@@ -941,14 +941,9 @@ def feedback_rows_for_roi() -> list[dict[str, Any]] | None:
 
 
 @app.get("/")
-def get_api_root() -> dict[str, Any]:
-    return {
-        "name": "Bengaluru Traffic Forecasting API",
-        "status": "running",
-        "docs": "/docs",
-        "health": "/platform/health",
-        "dashboard": "/app/",
-    }
+def get_api_root():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/app/")
 
 
 @app.get("/events/active")
