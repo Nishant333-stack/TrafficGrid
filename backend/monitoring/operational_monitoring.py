@@ -15,7 +15,6 @@ from backend.config.paths import PROJECT_ROOT
 
 
 APP_ROOT = PROJECT_ROOT
-LOCAL_FEEDBACK_PATH = PROJECT_ROOT / "feedback_log.jsonl"
 TRAINING_CACHE_PATH = PROJECT_ROOT / "backend" / "ml" / "models" / "training_events_preprocessed.parquet"
 MAX_REASONABLE_DURATION_MINUTES = 24 * 60
 
@@ -28,17 +27,8 @@ def safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def read_feedback_rows() -> list[dict[str, Any]]:
-    if not LOCAL_FEEDBACK_PATH.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in LOCAL_FEEDBACK_PATH.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
+    from backend.data.workflow import feedback_rows
+    return feedback_rows()
 
 
 def prediction_accuracy_metrics(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:

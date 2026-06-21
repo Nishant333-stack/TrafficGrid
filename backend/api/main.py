@@ -45,14 +45,13 @@ from backend.monitoring.platform_ops import (
 from backend.ml.predict import predict_impact
 from backend.monitoring.roi_metrics import executive_roi_summary
 from backend.data.workflow import (
-    AUDIT_LOG_PATH,
-    FIELD_STATUS_PATH,
     after_action_csv,
     after_action_report,
+    all_audit_logs,
+    all_field_status_rows,
     audit_log,
     create_plan_record,
     plan_history,
-    read_jsonl,
     record_field_status,
     sla_summary,
     update_plan_approval,
@@ -1154,8 +1153,8 @@ def get_event_sla(event_id: str) -> dict[str, Any]:
 
 @app.get("/audit/log")
 def get_audit_log(limit: int = 50) -> list[dict[str, Any]]:
-    rows = read_jsonl(AUDIT_LOG_PATH)
-    return jsonable(rows[-max(1, min(limit, 500)):])
+    rows = all_audit_logs()
+    return jsonable(rows[:max(1, min(limit, 500))])
 
 
 @app.post("/events/{event_id}/feedback")
@@ -1212,7 +1211,7 @@ def post_field_status(payload: FieldStatusRequest) -> dict[str, Any]:
 
 @app.get("/field/status")
 def get_field_status(event_id: str | None = None, station: str | None = None) -> list[dict[str, Any]]:
-    rows = read_jsonl(FIELD_STATUS_PATH)
+    rows = all_field_status_rows()
     if event_id is not None:
         rows = [row for row in rows if str(row.get("event_id")) == str(event_id)]
     if station is not None:

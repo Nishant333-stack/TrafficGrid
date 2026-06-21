@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.optimization.allocation import load_police_stations
-from backend.data.workflow import FIELD_STATUS_PATH, LOCAL_FEEDBACK_PATH, read_jsonl
+from backend.data.workflow import feedback_rows as get_feedback_rows, all_field_status_rows
 
 
 def _parse_created_at(value: Any) -> datetime | None:
@@ -24,7 +24,7 @@ def _parse_created_at(value: Any) -> datetime | None:
 
 def recent_feedback(days: int = 30, rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     cutoff = datetime.now(UTC) - timedelta(days=days)
-    source_rows = rows if rows is not None else read_jsonl(LOCAL_FEEDBACK_PATH)
+    source_rows = rows if rows is not None else get_feedback_rows()
     recent_rows = []
     for row in source_rows:
         created = _parse_created_at(row.get("created_at"))
@@ -138,7 +138,7 @@ def executive_roi_summary(
     personnel_utilization = deployed_personnel / max(station_capacity, 1)
     high_risk_corridors = active_high_risk_corridors([*active_events, *planned_events])
     delay_hours_avoided = sum(roi_reductions) * 110.0 / 60.0
-    field_status_rows = read_jsonl(FIELD_STATUS_PATH)
+    field_status_rows = all_field_status_rows()
     closure_updates = [
         row for row in field_status_rows if row.get("status") in {"road_cleared", "Road cleared"}
     ]

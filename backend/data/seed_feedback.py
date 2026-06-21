@@ -13,7 +13,6 @@ from sqlalchemy import create_engine, text
 from backend.config.env_loader import load_project_env
 from backend.optimization.generate_plan import generate_deployment_plan
 from backend.api.main import (
-    LOCAL_FEEDBACK_PATH,
     ensure_feedback_schema,
     planned_event_features,
 )
@@ -36,11 +35,6 @@ def parse_args() -> argparse.Namespace:
         description="Seed synthetic feedback rows for first-launch demo metrics."
     )
     parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
-    parser.add_argument(
-        "--local-only",
-        action="store_true",
-        help="Seed feedback_log.jsonl even when DATABASE_URL is set",
-    )
     return parser.parse_args()
 
 
@@ -154,21 +148,7 @@ def synthetic_feedback_rows(
 
 
 def seed_local(rows: list[dict[str, Any]]) -> None:
-    existing_rows: list[dict[str, Any]] = []
-    if LOCAL_FEEDBACK_PATH.exists():
-        for line in LOCAL_FEEDBACK_PATH.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("seed_source") != SEED_SOURCE:
-                existing_rows.append(row)
-
-    LOCAL_FEEDBACK_PATH.write_text("", encoding="utf-8")
-    with LOCAL_FEEDBACK_PATH.open("a", encoding="utf-8") as handle:
-        for row in existing_rows + rows:
-            handle.write(json.dumps(jsonable(row)) + "\n")
-
-    print(f"Seeded {len(rows)} synthetic local feedback rows at {LOCAL_FEEDBACK_PATH}")
+    pass
 
 
 def db_event_ids(database_url: str, fallback_count: int) -> list[str]:
@@ -240,17 +220,14 @@ def main() -> None:
     args = parse_args()
     seed_event, forecast, plan = demo_plan()
     database_url = os.environ.get("DATABASE_URL")
-    event_ids = [seed_event["id"]]
-
-    if database_url and not args.local_only:
-        event_ids = db_event_ids(database_url, args.rows)
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is required.")
+        
+    event_ids = db_event_ids(database_url, args.rows)
 
     rows = synthetic_feedback_rows(event_ids, args.rows, seed_event, forecast, plan)
 
-    if database_url and not args.local_only:
-        seed_database(database_url, rows)
-    else:
-        seed_local(rows)
+    seed_database(database_url, rows)
 
 
 if __name__ == "__main__":

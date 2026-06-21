@@ -60,8 +60,29 @@ def audit_log(
             },
         )
         
+        
     return row
 
+
+def all_audit_logs() -> list[dict[str, Any]]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM audit_log ORDER BY created_at DESC")
+        )
+        rows = []
+        for r in result:
+            rows.append({
+                "audit_id": r.audit_id,
+                "tenant_id": r.tenant_id,
+                "actor": r.actor,
+                "action": r.action,
+                "resource_type": r.resource_type,
+                "resource_id": r.resource_id,
+                "details": r.details,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
 
 def create_plan_record(
     event_id: str,
@@ -330,6 +351,31 @@ def _get_status_rows(event_id: str) -> list[dict[str, Any]]:
         result = conn.execute(
             text("SELECT * FROM field_status_updates WHERE event_id = :event_id ORDER BY created_at ASC"),
             {"event_id": event_id}
+        )
+        rows = []
+        for r in result:
+            rows.append({
+                "status_id": r.status_id,
+                "tenant_id": r.tenant_id,
+                "actor": r.actor,
+                "station": r.station,
+                "event_id": r.event_id,
+                "control_point_node_id": r.control_point_node_id,
+                "status": r.status,
+                "lat": r.latitude,
+                "lon": r.longitude,
+                "note": r.note,
+                "photo_url": r.photo_url,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+        return rows
+
+
+def all_field_status_rows() -> list[dict[str, Any]]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM field_status_updates ORDER BY created_at ASC")
         )
         rows = []
         for r in result:
