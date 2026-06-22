@@ -16,6 +16,13 @@ import time
 
 
 def main() -> int:
+    # Allow a fast, real-graph-free build: ROAD_GRAPH_MODE=demo or SKIP_GRAPH_BUILD.
+    mode = os.environ.get("ROAD_GRAPH_MODE", "").strip().lower()
+    skip = os.environ.get("SKIP_GRAPH_BUILD", "").strip().lower() in {"1", "true", "yes"}
+    if skip or mode in {"demo", "1", "true", "yes"}:
+        print("Skipping real road graph build (demo mode / SKIP_GRAPH_BUILD set).", flush=True)
+        return 0
+
     # Ensure we hit the real OSM download path, not the demo grid.
     os.environ.pop("ROAD_GRAPH_MODE", None)
 

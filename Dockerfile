@@ -33,9 +33,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=frontend /app/dist ./dist
 
+# Essential artifacts (must succeed): trained models + offline demo graph.
 RUN python -m backend.ml.bootstrap_models \
-    && python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()" \
-    && python scripts/build_graph_cache.py
+    && python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()"
+
+# Best-effort: pre-download the real Bengaluru OSM graph so diversions route
+# over real streets. Non-fatal -- if it can't complete in the build (slow/large
+# bbox, Overpass limits), the app still deploys and falls back to the demo grid
+# at runtime. Force demo-only fast builds with ROAD_GRAPH_MODE=demo.
+RUN python scripts/build_graph_cache.py \
+    || echo "WARN: real road graph not baked; runtime will use the demo grid"
 
 RUN chmod +x scripts/start.sh
 
