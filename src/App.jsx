@@ -1254,7 +1254,7 @@ function App() {
           <span>City-wide · {formatNumber(metrics.active_incident_count)} active · {formatNumber(plannedEvents.length)} planned</span>
         </div>
         <div className="top-status">
-          <a className="field-link" href="field">Field view</a>
+          <a className="field-link" href="/app/field">Field view</a>
           <span className={`connection-pill ${apiStatus}`}>{apiStatus}</span>
           <time>{formatClock(clock)} IST</time>
         </div>
