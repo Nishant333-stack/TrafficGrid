@@ -141,6 +141,15 @@ def load_artifacts() -> dict[str, Any]:
     }
 
 
+def reload_artifacts() -> None:
+    """Drop cached model artifacts so the next prediction loads freshly trained ones.
+
+    Called after a retrain so the running API serves the new models without a
+    process restart.
+    """
+    load_artifacts.cache_clear()
+
+
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
