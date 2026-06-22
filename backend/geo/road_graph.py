@@ -257,6 +257,19 @@ def get_graph(
     requested_bbox = bbox or parse_bbox()
     stale_graph: nx.MultiDiGraph | None = None
 
+    # Live mode with no pre-baked cache: fall back to the demo grid instead of
+    # blocking the request on a multi-minute OSM download. This keeps the app
+    # fast and reliable on hosts (e.g. Render) where the build couldn't bake the
+    # real graph. Set ROAD_GRAPH_ALLOW_RUNTIME_DOWNLOAD=true to opt back in.
+    allow_runtime_download = os.environ.get(
+        "ROAD_GRAPH_ALLOW_RUNTIME_DOWNLOAD", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    if not path.exists() and not force_download and not allow_runtime_download:
+        graph = _load_graph(cache_demo_graph())
+        graph.graph["cache_status"] = "fresh"
+        graph.graph["route_graph_scope"] = "demo_fallback"
+        return graph
+
     if path.exists():
         graph = _load_graph(path)
         source = graph.graph.get("source")
