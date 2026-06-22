@@ -5,6 +5,7 @@ import os
 import ssl
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,29 @@ WEATHER_TIMEOUT_SECONDS = float(os.environ.get("WEATHER_TIMEOUT_SECONDS", "4"))
 _WEATHER_CACHE: dict[str, dict[str, Any]] = {}
 _LAST_WEATHER_MODE: str = "fixture"
 _LAST_WEATHER_AT: float = 0.0
+
+# Live traffic incidents (TomTom Traffic Incidents API; free tier, needs a key).
+# Activates only when TOMTOM_API_KEY is set; otherwise falls back to fixtures.
+TOMTOM_API_KEY = os.environ.get("TOMTOM_API_KEY", "").strip()
+# bbox as minLon,minLat,maxLon,maxLat (TomTom order); default covers Bengaluru.
+INCIDENTS_BBOX = os.environ.get("INCIDENTS_BBOX", "77.45,12.86,77.78,13.08")
+INCIDENTS_TTL_SECONDS = float(os.environ.get("INCIDENTS_TTL_SECONDS", "120"))
+INCIDENTS_TIMEOUT_SECONDS = float(os.environ.get("INCIDENTS_TIMEOUT_SECONDS", "5"))
+INCIDENTS_LIMIT = int(os.environ.get("INCIDENTS_LIMIT", "25"))
+_INCIDENTS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "data": None}
+_LAST_INCIDENTS_MODE: str = "fixture"
+# TomTom iconCategory -> our event_cause vocabulary.
+_TOMTOM_CAUSE = {
+    1: "accident",
+    4: "rain",
+    6: "congestion",
+    7: "lane_closure",
+    8: "road_closure",
+    9: "roadwork",
+    10: "wind",
+    11: "waterlogging",
+    14: "breakdown",
+}
 
 
 def _ssl_context() -> ssl.SSLContext | None:
@@ -84,11 +108,130 @@ def read_json_feed(file_name: str) -> list[dict[str, Any]] | None:
     return None
 
 
+def _map_tomtom_incident(feature: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one TomTom v5 incident feature to our internal incident schema."""
+    props = feature.get("properties") or {}
+    geometry = feature.get("geometry") or {}
+    coords = geometry.get("coordinates") or []
+
+    # Geometry may be a Point [lon, lat] or a LineString [[lon, lat], ...].
+    point = coords
+    while isinstance(point, list) and point and isinstance(point[0], list):
+        point = point[0]
+    if not (isinstance(point, list) and len(point) >= 2):
+        return None
+    try:
+        lon, lat = float(point[0]), float(point[1])
+    except (TypeError, ValueError):
+        return None
+
+    icon = props.get("iconCategory")
+    try:
+        icon = int(icon)
+    except (TypeError, ValueError):
+        icon = 0
+    cause = _TOMTOM_CAUSE.get(icon, "incident")
+
+    try:
+        magnitude = int(props.get("magnitudeOfDelay") or 0)
+    except (TypeError, ValueError):
+        magnitude = 0
+    requires_closure = icon in (7, 8)
+    priority = "High" if magnitude >= 3 or requires_closure else "Low"
+
+    events = props.get("events") or []
+    description = events[0].get("description") if events and isinstance(events[0], dict) else None
+    road = None
+    road_numbers = props.get("roadNumbers")
+    if isinstance(road_numbers, list) and road_numbers:
+        road = str(road_numbers[0])
+
+    incident_id = props.get("id") or f"tomtom-{round(lat, 5)}-{round(lon, 5)}"
+    return {
+        "id": f"tomtom-{incident_id}",
+        "source": "tomtom_traffic_incidents",
+        "event_type": "incident",
+        "name": description or f"{cause.replace('_', ' ').title()} reported",
+        "latitude": lat,
+        "longitude": lon,
+        "event_cause": cause,
+        "priority": priority,
+        "status": "active",
+        "corridor": road or "UNKNOWN",
+        "zone": "UNKNOWN",
+        "police_station": "UNKNOWN",
+        "start_datetime": props.get("startTime") or now_ist().isoformat(),
+        "requires_road_closure": requires_closure,
+        "feed_confidence": 0.9,
+    }
+
+
+def _fetch_live_incidents() -> list[dict[str, Any]] | None:
+    """Fetch active incidents in the configured bbox from TomTom.
+
+    Returns None when no API key is configured or on any failure, so callers
+    fall back to fixtures. Never raises into the request path.
+    """
+    if not TOMTOM_API_KEY:
+        return None
+
+    fields = (
+        "{incidents{type,geometry{type,coordinates},"
+        "properties{id,iconCategory,magnitudeOfDelay,startTime,roadNumbers,"
+        "events{description,code,iconCategory}}}}"
+    )
+    query = urllib.parse.urlencode(
+        {
+            "key": TOMTOM_API_KEY,
+            "bbox": INCIDENTS_BBOX,
+            "fields": fields,
+            "language": "en-GB",
+            "timeValidityFilter": "present",
+        }
+    )
+    url = f"https://api.tomtom.com/traffic/services/5/incidentDetails?{query}"
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "TrafficGrid/1.0"})
+        with urllib.request.urlopen(
+            request, timeout=INCIDENTS_TIMEOUT_SECONDS, context=_ssl_context()
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    incidents = []
+    for feature in payload.get("incidents") or []:
+        mapped = _map_tomtom_incident(feature)
+        if mapped is not None:
+            incidents.append(mapped)
+        if len(incidents) >= INCIDENTS_LIMIT:
+            break
+    return incidents
+
+
 def live_incidents() -> list[dict[str, Any]]:
+    global _LAST_INCIDENTS_MODE
     configured = read_json_feed("live_incidents.json")
     if configured is not None:
+        _LAST_INCIDENTS_MODE = "fixture_file"
         return configured
 
+    if TOMTOM_API_KEY:
+        now = time.monotonic()
+        cached = _INCIDENTS_CACHE.get("data")
+        if cached is not None and now - _INCIDENTS_CACHE["fetched_at"] < INCIDENTS_TTL_SECONDS:
+            _LAST_INCIDENTS_MODE = "live"
+            return cached
+        live = _fetch_live_incidents()
+        if live is not None:
+            _INCIDENTS_CACHE.update(fetched_at=now, data=live)
+            _LAST_INCIDENTS_MODE = "live"
+            return live
+        if cached is not None:
+            _LAST_INCIDENTS_MODE = "live"
+            return cached
+
+    _LAST_INCIDENTS_MODE = "fixture"
     return [
         {
             "id": "astra-live-silk-board-01",
@@ -476,8 +619,10 @@ def integration_status() -> list[dict[str, Any]]:
     weather_feed()
     weather_mode = "live_api" if _LAST_WEATHER_MODE == "live" else "local_adapter"
     weather_age = int(max(0.0, time.monotonic() - _LAST_WEATHER_AT)) if _LAST_WEATHER_AT else 0
+    incident_records = len(live_incidents())
+    incident_mode = "live_api" if _LAST_INCIDENTS_MODE == "live" else "local_adapter"
     feeds = [
-        ("ASTraM live incidents", "incident", "local_adapter", len(live_incidents()), 0),
+        ("ASTraM live incidents", "incident", incident_mode, incident_records, 0),
         ("Planned permits", "permit", "local_adapter", len(planned_permits()), 0),
         ("Fleet GPS speeds", "mobility", "local_adapter", len(gps_speed_feed()), 0),
         ("Weather/rain/flooding", "weather", weather_mode, 1, weather_age),

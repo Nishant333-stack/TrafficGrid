@@ -27,6 +27,8 @@ The app reads configuration from environment variables (or a local `.env`):
 | `ROAD_GRAPH_MODE` | `demo` = offline grid (fast, fake roads); `live` = real OSM graph | `demo` (local) / `live` (Docker) |
 | `ACTIVE_EVENT_INCLUDE_DEMO_FEEDS` | Blend synthetic "live" incidents | `true` |
 | `LIVE_WEATHER` | Fetch real rainfall/wind from Open-Meteo (keyless) per event location | `true` |
+| `TOMTOM_API_KEY` | If set, live traffic incidents come from TomTom (free tier); else fixtures | _(unset)_ |
+| `INCIDENTS_BBOX` | bbox `minLon,minLat,maxLon,maxLat` for incident queries | Bengaluru |
 | `PORT` | Server port (Render sets this) | `8000` |
 
 ## Post-event learning (retrain loop)
