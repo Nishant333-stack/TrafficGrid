@@ -32,7 +32,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sqlalchemy import create_engine, text
 
-from feature_cleaning import (
+from backend.ml.feature_cleaning import (
     duration_cap_for_event,
     event_category_for_cause,
     normalize_category,
@@ -102,6 +102,11 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Skip merging officer-reported actual durations into the training labels",
+    )
     return parser.parse_args()
 
 
@@ -152,7 +157,7 @@ def load_events_from_db() -> pd.DataFrame:
 
 
 def load_events_from_csv(csv_path: Path) -> pd.DataFrame:
-    from load_data import load_csv
+    from backend.data.load_data import load_csv
 
     data, missing_ids, duplicate_ids, negative_durations = load_csv(csv_path)
     if missing_ids:
@@ -176,6 +181,49 @@ def load_events_from_csv(csv_path: Path) -> pd.DataFrame:
             "duration_minutes",
         ]
     ].copy()
+
+
+def apply_feedback_labels(events: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Override duration labels with officer-reported actual durations.
+
+    This is the post-event learning step: when a field officer reports the real
+    clearance time via feedback, that ground truth supersedes the timestamp-
+    derived duration so the next model trains on corrected outcomes. The most
+    recent feedback per event wins.
+    """
+    if "id" not in events.columns:
+        return events, 0
+    try:
+        from backend.data.workflow import feedback_rows
+
+        rows = feedback_rows()
+    except Exception as exc:  # pragma: no cover - feedback store optional
+        print(f"Warning: could not read feedback for label merge: {exc}", flush=True)
+        return events, 0
+
+    actuals: dict[str, float] = {}
+    for row in rows:
+        event_id = row.get("event_id")
+        actual = row.get("actual_duration_minutes")
+        if event_id is None or actual in (None, ""):
+            continue
+        try:
+            value = float(actual)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            actuals[str(event_id)] = value
+
+    if not actuals:
+        return events, 0
+
+    frame = events.copy()
+    ids = frame["id"].astype(str)
+    mask = ids.isin(actuals)
+    if not mask.any():
+        return frame, 0
+    frame.loc[mask, "duration_minutes"] = ids[mask].map(actuals).astype(float)
+    return frame, int(mask.sum())
 
 
 def add_derived_features(data: pd.DataFrame) -> pd.DataFrame:
@@ -520,6 +568,49 @@ def run_single_stage(stage: str, models_dir: Path, preprocessed_path: Path) -> N
         raise SystemExit(f"Unknown training stage: {stage}")
 
 
+def run_training(
+    models_dir: Path = MODEL_DIR,
+    csv: Path | None = None,
+    preprocessed_path: Path | None = None,
+    use_feedback: bool = True,
+) -> dict[str, Any]:
+    """Train all artifacts from events (+ officer feedback) into ``models_dir``.
+
+    Returns a summary so callers (CLI, retrain endpoint) can report what happened.
+    Importable so the running API can retrain and reload without a subprocess.
+    """
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    preprocessed_path = preprocessed_path or models_dir / "training_events_preprocessed.parquet"
+
+    if csv:
+        events = load_events_from_csv(csv)
+        print(f"Loaded training data from CSV: {csv}", flush=True)
+    else:
+        events = load_events_from_db()
+        print("Loaded training data from Postgres events table", flush=True)
+
+    feedback_labels = 0
+    if use_feedback:
+        events, feedback_labels = apply_feedback_labels(events)
+        print(f"Applied {feedback_labels} officer-reported duration labels", flush=True)
+
+    data = preprocess_and_cache(events, preprocessed_path)
+    if data.empty:
+        raise SystemExit("No events found for training.")
+
+    print_data_summary(data)
+    for stage in ("duration", "severity", "risk"):
+        run_stage(stage, models_dir, preprocessed_path)
+    print(f"Saved model artifacts to {models_dir.resolve()}")
+
+    return {
+        "events_used": int(len(data)),
+        "feedback_labels_applied": feedback_labels,
+        "models_dir": str(models_dir.resolve()),
+    }
+
+
 def main() -> None:
     args = parse_args()
     args.models_dir.mkdir(parents=True, exist_ok=True)
@@ -533,21 +624,12 @@ def main() -> None:
         run_single_stage(args.stage, args.models_dir, preprocessed_path)
         return
 
-    if args.csv:
-        events = load_events_from_csv(args.csv)
-        print(f"Loaded training data from CSV: {args.csv}", flush=True)
-    else:
-        events = load_events_from_db()
-        print("Loaded training data from Postgres events table", flush=True)
-
-    data = preprocess_and_cache(events, preprocessed_path)
-    if data.empty:
-        raise SystemExit("No events found for training.")
-
-    print_data_summary(data)
-    for stage in ("duration", "severity", "risk"):
-        run_stage(stage, args.models_dir, preprocessed_path)
-    print(f"Saved model artifacts to {args.models_dir.resolve()}")
+    run_training(
+        models_dir=args.models_dir,
+        csv=args.csv,
+        preprocessed_path=preprocessed_path,
+        use_feedback=not args.no_feedback,
+    )
 
 
 if __name__ == "__main__":
