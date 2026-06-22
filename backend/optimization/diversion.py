@@ -336,11 +336,58 @@ def endpoint_pairs(
     return pairs
 
 
+def _best_edge_data(graph: nx.MultiDiGraph, source: int, target: int) -> dict[str, Any] | None:
+    """Return the shortest parallel edge between two nodes (the one routing uses)."""
+    data = graph.get_edge_data(source, target)
+    if not data:
+        return None
+    return min(data.values(), key=lambda edge: edge.get("length", float("inf")))
+
+
 def route_coordinates(graph: nx.MultiDiGraph, route: list[int]) -> list[dict[str, float]]:
-    return [
-        {"lat": node_lat_lon(graph, node_id)[0], "lon": node_lat_lon(graph, node_id)[1]}
-        for node_id in route
-    ]
+    """Trace the route along real road geometry.
+
+    For each segment we follow the OSM edge's ``geometry`` (a curved LineString)
+    when present, instead of drawing a straight chord between intersections.
+    Edges without geometry (already-straight segments) fall back to the two
+    node endpoints. Consecutive duplicate points are collapsed.
+    """
+    coords: list[tuple[float, float]] = []
+
+    def push(lat: float, lon: float) -> None:
+        point = (round(float(lat), 7), round(float(lon), 7))
+        if not coords or coords[-1] != point:
+            coords.append(point)
+
+    if not route:
+        return []
+
+    if len(route) == 1:
+        lat, lon = node_lat_lon(graph, route[0])
+        return [{"lat": lat, "lon": lon}]
+
+    for index in range(len(route) - 1):
+        source = route[index]
+        target = route[index + 1]
+        edge = _best_edge_data(graph, source, target)
+        geometry = edge.get("geometry") if edge else None
+        if geometry is not None and getattr(geometry, "coords", None) is not None:
+            # Shapely LineString stores (x=lon, y=lat); orient it source -> target.
+            line = [(lat, lon) for lon, lat in geometry.coords]
+            src_lat, src_lon = node_lat_lon(graph, source)
+            if line and haversine_meters(*line[0], src_lat, src_lon) > haversine_meters(
+                *line[-1], src_lat, src_lon
+            ):
+                line.reverse()
+            for lat, lon in line:
+                push(lat, lon)
+        else:
+            src_lat, src_lon = node_lat_lon(graph, source)
+            tgt_lat, tgt_lon = node_lat_lon(graph, target)
+            push(src_lat, src_lon)
+            push(tgt_lat, tgt_lon)
+
+    return [{"lat": lat, "lon": lon} for lat, lon in coords]
 
 
 def geographic_heuristic(graph: nx.MultiDiGraph):
