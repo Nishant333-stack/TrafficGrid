@@ -25,6 +25,10 @@ def get_engine() -> Engine:
             max_overflow=20,
             pool_timeout=30,
             pool_recycle=1800,
+            # Validate connections before use so a recycled/idled Postgres
+            # connection (common on managed/free tiers) doesn't surface as a
+            # 500 ("server closed the connection unexpectedly").
+            pool_pre_ping=True,
         )
         return _engine
     except Exception as exc:

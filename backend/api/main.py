@@ -210,6 +210,31 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
+@app.on_event("startup")
+def ensure_schema_on_startup() -> None:
+    """Guarantee the core tables exist before serving traffic.
+
+    This is a safety net for the deploy path: if ``scripts/init_db.py`` failed
+    or was skipped (e.g. the managed Postgres was not ready in time), the app
+    would otherwise serve 500s against missing tables while ``/platform/health``
+    (a bare ``SELECT 1``) still reports healthy. Applying ``schema_render.sql``
+    is idempotent (every statement is ``CREATE TABLE IF NOT EXISTS`` /
+    ``INSERT ... ON CONFLICT DO NOTHING``), so re-running it is cheap and never
+    destroys data.
+    """
+    if not os.environ.get("DATABASE_URL"):
+        return
+    schema_path = PROJECT_ROOT / "schema_render.sql"
+    if not schema_path.exists():
+        return
+    try:
+        engine = get_engine()
+        with engine.begin() as connection:
+            connection.exec_driver_sql(schema_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - never block startup on this safety net
+        print(f"WARNING: startup schema ensure failed: {exc}", flush=True)
+
+
 @app.middleware("http")
 async def observe_requests(request: Request, call_next):
     start = time.perf_counter()
@@ -281,6 +306,16 @@ def load_planned_events() -> list[dict[str, Any]]:
 
 def scheduled_start_value(event: dict[str, Any]) -> Any:
     return event.get("scheduled_start") or event.get("scheduled_start_time")
+
+
+def is_planned_event(event: dict[str, Any]) -> bool:
+    """Classify an event as planned (rally/festival/sports/construction/permit)
+    vs unplanned (crash/breakdown/etc.), per the problem statement's two classes."""
+    event_type = str(event.get("event_type") or "").strip().lower()
+    if event_type:
+        return event_type == "planned"
+    status = str(event.get("status") or "").strip().lower()
+    return status in {"planned", "upcoming", "scheduled"}
 
 
 def planned_event_response(event: dict[str, Any]) -> dict[str, Any]:
@@ -505,9 +540,19 @@ def forecast_event(event_id: str) -> dict[str, Any]:
         return cached
 
     forecast = predict_impact(event)
+    planned = is_planned_event(event)
     payload = {
         "event_id": event_id,
         **jsonable(forecast),
+        # Make the planned vs unplanned distinction explicit for the dashboard.
+        "event_class": "planned" if planned else "unplanned",
+        "event_type": event.get("event_type") or ("planned" if planned else "unplanned"),
+        "scheduled_start": jsonable(scheduled_start_value(event) or event.get("start_datetime"))
+        if planned
+        else None,
+        "event_name": event.get("name")
+        or event.get("event_name")
+        or (event.get("address") if planned else None),
         "operational_context": jsonable(operational_context_for_event(event)),
         "similar_events": similar_events(event, limit=5),
         "cache_status": "miss",
@@ -1226,6 +1271,13 @@ if FRONTEND_DIST.is_dir():
         candidate = FRONTEND_DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
+        # A request for a concrete asset (anything with a file extension, e.g.
+        # /app/assets/index-*.js) that does not exist must 404 rather than fall
+        # back to index.html -- otherwise the browser receives HTML for a
+        # module script and fails with a confusing MIME-type error.
+        if Path(full_path).suffix:
+            raise HTTPException(status_code=404, detail=f"Asset not found: {full_path}")
+        # SPA client-side route -> serve the app shell.
         return FileResponse(FRONTEND_DIST / "index.html")
 
     @app.get("/app")

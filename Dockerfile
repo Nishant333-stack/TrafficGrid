@@ -15,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MPLCONFIGDIR=/tmp/matplotlib \
-    MODEL_DIR=/app/backend/ml/models \
+    MODEL_DIR=/app/models \
     ROAD_GRAPH_MODE=demo \
     WEB_CONCURRENCY=1
 
