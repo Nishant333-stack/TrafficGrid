@@ -26,7 +26,28 @@ The app reads configuration from environment variables (or a local `.env`):
 | `MODEL_DIR` | Trained model artifacts | `./models` (local) / `/app/models` (Docker) |
 | `ROAD_GRAPH_MODE` | `demo` = offline grid (fast, fake roads); `live` = real OSM graph | `demo` (local) / `live` (Docker) |
 | `ACTIVE_EVENT_INCLUDE_DEMO_FEEDS` | Blend synthetic "live" incidents | `true` |
+| `LIVE_WEATHER` | Fetch real rainfall/wind from Open-Meteo (keyless) per event location | `true` |
 | `PORT` | Server port (Render sets this) | `8000` |
+
+## Post-event learning (retrain loop)
+
+Officer feedback (`POST /events/{id}/feedback`) records the actual clearance
+time. Retraining merges those actuals as corrected duration labels and rebuilds
+the models:
+
+```bash
+python scripts/retrain.py            # events + feedback -> new artifacts, reload cache
+```
+
+Or trigger it on the running service (admin role):
+
+```bash
+curl -X POST $BASE/models/retrain -H "X-User-Role: admin"
+curl $BASE/models/retrain/status
+```
+
+The job runs in the background and hot-reloads the model cache on completion, so
+predictions use the new models without a restart.
 
 ---
 

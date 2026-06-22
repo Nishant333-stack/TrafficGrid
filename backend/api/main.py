@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -1092,6 +1093,78 @@ def get_model_drift() -> dict[str, Any]:
 @app.get("/models/retrain-plan")
 def get_model_retrain_plan() -> dict[str, Any]:
     return retrain_plan()
+
+
+_RETRAIN_LOCK = threading.Lock()
+_RETRAIN_STATE: dict[str, Any] = {
+    "status": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "result": None,
+    "error": None,
+}
+
+
+def _run_retrain_job(use_feedback: bool) -> None:
+    """Retrain artifacts from events + feedback, then hot-reload them. Runs in a thread."""
+    from backend.ml.predict import reload_artifacts
+    from backend.ml.train_models import run_training
+    from backend.monitoring.operational_monitoring import prediction_accuracy_metrics
+
+    try:
+        accuracy_before = prediction_accuracy_metrics()
+        summary = run_training(use_feedback=use_feedback)
+        reload_artifacts()
+        _RETRAIN_STATE.update(
+            status="completed",
+            finished_at=datetime.now(UTC).isoformat(),
+            result={**summary, "feedback_accuracy_before": accuracy_before},
+            error=None,
+        )
+    except Exception as exc:  # pragma: no cover - background diagnostics
+        _RETRAIN_STATE.update(
+            status="failed",
+            finished_at=datetime.now(UTC).isoformat(),
+            error=str(exc),
+        )
+    finally:
+        _RETRAIN_LOCK.release()
+
+
+@app.post("/models/retrain")
+def post_model_retrain(
+    use_feedback: bool = True,
+    context: RequestContext = Depends(require_roles("admin")),
+) -> dict[str, Any]:
+    """Kick off a background retrain that learns from accumulated officer feedback."""
+    if not _RETRAIN_LOCK.acquire(blocking=False):
+        return {
+            "status": "already_running",
+            "detail": "A retrain job is already in progress.",
+            "state": jsonable(_RETRAIN_STATE),
+        }
+    _RETRAIN_STATE.update(
+        status="running",
+        started_at=datetime.now(UTC).isoformat(),
+        finished_at=None,
+        result=None,
+        error=None,
+    )
+    audit_log(
+        "models.retrain",
+        context.user_id,
+        context.tenant_id,
+        "models",
+        "retrain",
+        {"use_feedback": use_feedback},
+    )
+    threading.Thread(target=_run_retrain_job, args=(use_feedback,), daemon=True).start()
+    return {"status": "started", "state": jsonable(_RETRAIN_STATE)}
+
+
+@app.get("/models/retrain/status")
+def get_model_retrain_status() -> dict[str, Any]:
+    return jsonable(_RETRAIN_STATE)
 
 
 @app.post("/events/{event_id}/forecast")

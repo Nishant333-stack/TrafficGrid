@@ -22,7 +22,10 @@ WEATHER_LAT = float(os.environ.get("WEATHER_LAT", "12.9716"))
 WEATHER_LON = float(os.environ.get("WEATHER_LON", "77.5946"))
 WEATHER_TTL_SECONDS = float(os.environ.get("WEATHER_TTL_SECONDS", "600"))
 WEATHER_TIMEOUT_SECONDS = float(os.environ.get("WEATHER_TIMEOUT_SECONDS", "4"))
-_WEATHER_CACHE: dict[str, Any] = {"fetched_at": 0.0, "data": None, "mode": "fixture"}
+# Per-coordinate cache so each event location gets its own live reading.
+_WEATHER_CACHE: dict[str, dict[str, Any]] = {}
+_LAST_WEATHER_MODE: str = "fixture"
+_LAST_WEATHER_AT: float = 0.0
 
 
 def _ssl_context() -> ssl.SSLContext | None:
@@ -210,16 +213,40 @@ def _live_weather_enabled() -> bool:
     return os.environ.get("LIVE_WEATHER", "true").strip().lower() not in {"false", "0", "no", "off"}
 
 
-def _fetch_live_weather() -> dict[str, Any] | None:
-    """Fetch current rainfall for the configured point from Open-Meteo.
+def _weather_conditions(code: Any) -> str:
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return "unknown"
+    if code == 0:
+        return "clear"
+    if code in (1, 2, 3):
+        return "cloudy"
+    if code in (45, 48):
+        return "fog"
+    if 51 <= code <= 57:
+        return "drizzle"
+    if 61 <= code <= 67:
+        return "rain"
+    if 71 <= code <= 77:
+        return "snow"
+    if 80 <= code <= 82:
+        return "rain_showers"
+    if 95 <= code <= 99:
+        return "thunderstorm"
+    return "unknown"
 
-    Keyless and free. Returns None on any failure so callers fall back to the
-    static fixture; never raises into the request path.
+
+def _fetch_live_weather(lat: float, lon: float) -> dict[str, Any] | None:
+    """Fetch current weather for a point from Open-Meteo (keyless, free).
+
+    Returns None on any failure so callers fall back to the static fixture;
+    never raises into the request path.
     """
     url = (
         "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={WEATHER_LAT}&longitude={WEATHER_LON}"
-        "&current=precipitation,rain,weather_code"
+        f"?latitude={lat}&longitude={lon}"
+        "&current=precipitation,rain,weather_code,wind_gusts_10m"
         "&timezone=Asia%2FKolkata"
     )
     try:
@@ -240,14 +267,21 @@ def _fetch_live_weather() -> dict[str, Any] | None:
     except (TypeError, ValueError):
         return None
 
+    try:
+        wind_gusts = round(float(current.get("wind_gusts_10m")), 1)
+    except (TypeError, ValueError):
+        wind_gusts = None
+
     return {
         "source": "open_meteo_live",
         "rainfall_mm_1h": round(rainfall_mm_1h, 2),
         "rainfall_intensity": _rain_intensity(rainfall_mm_1h),
         "flood_risk": round(min(1.0, rainfall_mm_1h / 25.0), 2),
         "road_surface": "wet" if rainfall_mm_1h > 0.1 else "dry",
+        "wind_gusts_kmph": wind_gusts,
+        "conditions": _weather_conditions(current.get("weather_code")),
         "observed_at": current.get("time") or now_ist().isoformat(),
-        "location": {"latitude": WEATHER_LAT, "longitude": WEATHER_LON},
+        "location": {"latitude": round(float(lat), 4), "longitude": round(float(lon), 4)},
     }
 
 
@@ -258,34 +292,51 @@ def _fixture_weather() -> dict[str, Any]:
         "rainfall_intensity": "moderate",
         "flood_risk": 0.42,
         "road_surface": "wet",
+        "wind_gusts_kmph": None,
+        "conditions": "rain",
         "observed_at": now_ist().isoformat(),
     }
 
 
-def weather_feed() -> dict[str, Any]:
-    # Operator-supplied override file wins, for offline demos / pinned scenarios.
-    configured = read_json_feed("weather.json")
-    if configured:
-        _WEATHER_CACHE.update(fetched_at=time.monotonic(), data=configured[0], mode="fixture_file")
-        return configured[0]
-
+def weather_for_point(lat: float, lon: float) -> dict[str, Any]:
+    """Live current weather for a specific point, TTL-cached per coordinate."""
+    global _LAST_WEATHER_MODE, _LAST_WEATHER_AT
     if not _live_weather_enabled():
+        _LAST_WEATHER_MODE = "fixture"
         return _fixture_weather()
 
-    # Serve cached live data within the TTL to avoid hitting the API per request.
-    age = time.monotonic() - _WEATHER_CACHE["fetched_at"]
-    if _WEATHER_CACHE["data"] is not None and _WEATHER_CACHE["mode"] == "live" and age < WEATHER_TTL_SECONDS:
-        return _WEATHER_CACHE["data"]
+    try:
+        key = f"{round(float(lat), 3)},{round(float(lon), 3)}"
+    except (TypeError, ValueError):
+        return _fixture_weather()
 
-    live = _fetch_live_weather()
+    now = time.monotonic()
+    entry = _WEATHER_CACHE.get(key)
+    if entry and entry.get("data") is not None and now - entry["fetched_at"] < WEATHER_TTL_SECONDS:
+        _LAST_WEATHER_MODE, _LAST_WEATHER_AT = "live", entry["fetched_at"]
+        return entry["data"]
+
+    live = _fetch_live_weather(lat, lon)
     if live is not None:
-        _WEATHER_CACHE.update(fetched_at=time.monotonic(), data=live, mode="live")
+        _WEATHER_CACHE[key] = {"fetched_at": now, "data": live}
+        _LAST_WEATHER_MODE, _LAST_WEATHER_AT = "live", now
         return live
 
-    # Network failed: reuse a recent live reading if we have one, else fixture.
-    if _WEATHER_CACHE["data"] is not None and _WEATHER_CACHE["mode"] == "live":
-        return _WEATHER_CACHE["data"]
+    # Network failed: reuse a recent live reading for this point, else fixture.
+    if entry and entry.get("data") is not None:
+        return entry["data"]
+    _LAST_WEATHER_MODE = "fixture"
     return _fixture_weather()
+
+
+def weather_feed() -> dict[str, Any]:
+    # Operator-supplied override file wins, for offline demos / pinned scenarios.
+    global _LAST_WEATHER_MODE
+    configured = read_json_feed("weather.json")
+    if configured:
+        _LAST_WEATHER_MODE = "fixture_file"
+        return configured[0]
+    return weather_for_point(WEATHER_LAT, WEATHER_LON)
 
 
 def sensor_counts() -> list[dict[str, Any]]:
@@ -376,11 +427,24 @@ def sensor_context_for_corridor(corridor: Any) -> dict[str, Any]:
     }
 
 
+def _event_lat_lon(event_features: dict[str, Any]) -> tuple[float, float] | None:
+    try:
+        lat = float(event_features.get("latitude"))
+        lon = float(event_features.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if lat == 0.0 and lon == 0.0:
+        return None
+    return lat, lon
+
+
 def operational_context_for_event(event_features: dict[str, Any]) -> dict[str, Any]:
     corridor = event_features.get("corridor")
     speed = speed_context_for_corridor(corridor)
     sensor = sensor_context_for_corridor(corridor)
-    weather = weather_feed()
+    # Live weather at the incident's own location when we have coordinates.
+    point = _event_lat_lon(event_features)
+    weather = weather_for_point(*point) if point else weather_feed()
     relevant_advisories = [
         advisory
         for advisory in advisories()
@@ -410,8 +474,8 @@ def integration_status() -> list[dict[str, Any]]:
     observed = datetime.now(UTC)
     # Refresh weather so its reported mode (live vs fixture) is current.
     weather_feed()
-    weather_mode = "live_api" if _WEATHER_CACHE.get("mode") == "live" else "local_adapter"
-    weather_age = int(max(0.0, time.monotonic() - _WEATHER_CACHE.get("fetched_at", 0.0)))
+    weather_mode = "live_api" if _LAST_WEATHER_MODE == "live" else "local_adapter"
+    weather_age = int(max(0.0, time.monotonic() - _LAST_WEATHER_AT)) if _LAST_WEATHER_AT else 0
     feeds = [
         ("ASTraM live incidents", "incident", "local_adapter", len(live_incidents()), 0),
         ("Planned permits", "permit", "local_adapter", len(planned_permits()), 0),
