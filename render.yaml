@@ -18,7 +18,7 @@ services:
           name: trafficguide-db
           property: connectionString
       - key: ROAD_GRAPH_MODE
-        value: demo
+        value: live
       - key: MODEL_DIR
         value: /app/models
       - key: WEB_CONCURRENCY

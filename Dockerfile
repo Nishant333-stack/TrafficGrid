@@ -16,7 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     MPLCONFIGDIR=/tmp/matplotlib \
     MODEL_DIR=/app/models \
-    ROAD_GRAPH_MODE=demo \
+    ROAD_GRAPH_MODE=live \
     WEB_CONCURRENCY=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,7 +34,8 @@ COPY . .
 COPY --from=frontend /app/dist ./dist
 
 RUN python -m backend.ml.bootstrap_models \
-    && python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()"
+    && python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()" \
+    && python scripts/build_graph_cache.py
 
 RUN chmod +x scripts/start.sh
 

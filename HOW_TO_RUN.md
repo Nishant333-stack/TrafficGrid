@@ -24,7 +24,7 @@ The app reads configuration from environment variables (or a local `.env`):
 |---|---|---|
 | `DATABASE_URL` | Postgres connection (required) | `postgresql+psycopg2://user:pass@localhost:5432/trafficgrid` |
 | `MODEL_DIR` | Trained model artifacts | `./models` (local) / `/app/models` (Docker) |
-| `ROAD_GRAPH_MODE` | `demo` avoids OSM downloads | `demo` |
+| `ROAD_GRAPH_MODE` | `demo` = offline grid (fast, fake roads); `live` = real OSM graph | `demo` (local) / `live` (Docker) |
 | `ACTIVE_EVENT_INCLUDE_DEMO_FEEDS` | Blend synthetic "live" incidents | `true` |
 | `PORT` | Server port (Render sets this) | `8000` |
 
@@ -112,7 +112,11 @@ service. From the Render dashboard: **New → Blueprint**, point at this repo, a
 deploy. Key settings are already wired:
 
 - `DATABASE_URL` is injected from the managed database.
-- `MODEL_DIR=/app/models`, `ROAD_GRAPH_MODE=demo`, `healthCheckPath=/platform/health`.
+- `MODEL_DIR=/app/models`, `ROAD_GRAPH_MODE=live`, `healthCheckPath=/platform/health`.
+- The Docker build pre-downloads the real Bengaluru OSM drive graph
+  (`scripts/build_graph_cache.py`) and bakes it into the image, so diversions
+  route over actual streets with no runtime download. Set `ROAD_GRAPH_MODE=demo`
+  for a fast offline grid (e.g. local dev without the cached graph).
 - On boot the container waits for the DB, applies the schema, loads the CSV, and
   seeds demo feedback — so the dashboard has data on first deploy.
 
