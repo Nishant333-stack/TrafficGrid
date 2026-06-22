@@ -51,6 +51,11 @@ _TOMTOM_CAUSE = {
     14: "breakdown",
 }
 
+# MapQuest Traffic Incidents (free dev tier, typically no card). Same key=one product.
+MAPQUEST_API_KEY = os.environ.get("MAPQUEST_API_KEY", "").strip()
+# MapQuest incident "type" -> our event_cause vocabulary.
+_MAPQUEST_CAUSE = {1: "roadwork", 2: "public_event", 3: "congestion", 4: "accident"}
+
 
 def _ssl_context() -> ssl.SSLContext | None:
     """Verified TLS context using certifi's CA bundle.
@@ -166,12 +171,8 @@ def _map_tomtom_incident(feature: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _fetch_live_incidents() -> list[dict[str, Any]] | None:
-    """Fetch active incidents in the configured bbox from TomTom.
-
-    Returns None when no API key is configured or on any failure, so callers
-    fall back to fixtures. Never raises into the request path.
-    """
+def _fetch_tomtom_incidents() -> list[dict[str, Any]] | None:
+    """Fetch active incidents in the configured bbox from TomTom (None on failure)."""
     if not TOMTOM_API_KEY:
         return None
 
@@ -209,6 +210,96 @@ def _fetch_live_incidents() -> list[dict[str, Any]] | None:
     return incidents
 
 
+def _mapquest_bounding_box() -> str:
+    """Convert INCIDENTS_BBOX (minLon,minLat,maxLon,maxLat) to MapQuest order.
+
+    MapQuest wants upperLeftLat,upperLeftLng,lowerRightLat,lowerRightLng.
+    """
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(p) for p in INCIDENTS_BBOX.split(","))
+    except (ValueError, TypeError):
+        return "13.08,77.45,12.86,77.78"
+    return f"{max_lat},{min_lon},{min_lat},{max_lon}"
+
+
+def _map_mapquest_incident(item: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        lat = float(item.get("lat"))
+        lon = float(item.get("lng"))
+    except (TypeError, ValueError):
+        return None
+
+    cause = _MAPQUEST_CAUSE.get(item.get("type"), "incident")
+    try:
+        severity = int(item.get("severity") or 0)
+    except (TypeError, ValueError):
+        severity = 0
+    requires_closure = severity >= 4
+    priority = "High" if severity >= 3 else "Low"
+    name = item.get("shortDesc") or item.get("fullDesc") or f"{cause.replace('_', ' ').title()} reported"
+
+    return {
+        "id": f"mapquest-{item.get('id', f'{round(lat, 5)}-{round(lon, 5)}')}",
+        "source": "mapquest_traffic_incidents",
+        "event_type": "incident",
+        "name": name,
+        "latitude": lat,
+        "longitude": lon,
+        "event_cause": cause,
+        "priority": priority,
+        "status": "active",
+        "corridor": "UNKNOWN",
+        "zone": "UNKNOWN",
+        "police_station": "UNKNOWN",
+        "start_datetime": item.get("startTime") or now_ist().isoformat(),
+        "requires_road_closure": requires_closure,
+        "feed_confidence": 0.85,
+    }
+
+
+def _fetch_mapquest_incidents() -> list[dict[str, Any]] | None:
+    """Fetch active incidents from MapQuest Traffic Incidents (None on failure)."""
+    if not MAPQUEST_API_KEY:
+        return None
+
+    query = urllib.parse.urlencode(
+        {
+            "key": MAPQUEST_API_KEY,
+            "boundingBox": _mapquest_bounding_box(),
+            "filters": "incidents,construction,event,congestion",
+        }
+    )
+    url = f"https://www.mapquestapi.com/traffic/v2/incidents?{query}"
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "TrafficGrid/1.0"})
+        with urllib.request.urlopen(
+            request, timeout=INCIDENTS_TIMEOUT_SECONDS, context=_ssl_context()
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    incidents = []
+    for item in payload.get("incidents") or []:
+        mapped = _map_mapquest_incident(item)
+        if mapped is not None:
+            incidents.append(mapped)
+        if len(incidents) >= INCIDENTS_LIMIT:
+            break
+    return incidents
+
+
+def _fetch_live_incidents() -> list[dict[str, Any]] | None:
+    """Try each configured live incident provider in turn; None if none succeed."""
+    if TOMTOM_API_KEY:
+        result = _fetch_tomtom_incidents()
+        if result is not None:
+            return result
+    if MAPQUEST_API_KEY:
+        return _fetch_mapquest_incidents()
+    return None
+
+
 def live_incidents() -> list[dict[str, Any]]:
     global _LAST_INCIDENTS_MODE
     configured = read_json_feed("live_incidents.json")
@@ -216,7 +307,7 @@ def live_incidents() -> list[dict[str, Any]]:
         _LAST_INCIDENTS_MODE = "fixture_file"
         return configured
 
-    if TOMTOM_API_KEY:
+    if TOMTOM_API_KEY or MAPQUEST_API_KEY:
         now = time.monotonic()
         cached = _INCIDENTS_CACHE.get("data")
         if cached is not None and now - _INCIDENTS_CACHE["fetched_at"] < INCIDENTS_TTL_SECONDS:
