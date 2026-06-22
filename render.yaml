@@ -20,7 +20,7 @@ services:
       - key: ROAD_GRAPH_MODE
         value: demo
       - key: MODEL_DIR
-        value: /app/backend/ml/models
+        value: /app/models
       - key: WEB_CONCURRENCY
         value: "1"
       - key: GUNICORN_TIMEOUT

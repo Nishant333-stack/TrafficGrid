@@ -64,6 +64,11 @@ TEXT_COLUMNS = [
 EVENT_COLUMNS = SOURCE_COLUMNS + ["duration_minutes"]
 NULL_SENTINELS = {"", "null", "none", "nan", "nat", "n/a", "na"}
 BENGALURU_CENTER = (12.9716, 77.5946)
+# Durations longer than this are treated as data-entry artifacts (a ticket left
+# open for days/weeks) rather than real clearance times, and are nulled so they
+# act as censored observations instead of skewing duration statistics/training.
+# The dataset's median incident is ~64 min; the raw max is ~140 days.
+MAX_PLAUSIBLE_DURATION_MINUTES = 24 * 60
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,12 +163,16 @@ def load_csv(csv_path: Path) -> tuple[pd.DataFrame, int, int, int]:
     effective_end = data["closed_datetime"].combine_first(data["resolved_datetime"])
     duration = (effective_end - data["start_datetime"]).dt.total_seconds().div(60)
     has_duration_inputs = effective_end.notna() & data["start_datetime"].notna()
-    negative_duration_mask = has_duration_inputs & (duration < 0)
-    negative_duration_count = int(negative_duration_mask.sum())
-    duration = duration.where(has_duration_inputs & ~negative_duration_mask)
+    # Null out durations that are negative (end before start) or implausibly long
+    # (stale tickets). Both are data errors; nulling makes them censored.
+    invalid_duration_mask = has_duration_inputs & (
+        (duration < 0) | (duration > MAX_PLAUSIBLE_DURATION_MINUTES)
+    )
+    invalid_duration_count = int(invalid_duration_mask.sum())
+    duration = duration.where(has_duration_inputs & ~invalid_duration_mask)
     data["duration_minutes"] = duration.round().astype("Int64")
 
-    return data, missing_id_count, duplicate_id_count, negative_duration_count
+    return data, missing_id_count, duplicate_id_count, invalid_duration_count
 
 
 def db_value(value: Any) -> Any:

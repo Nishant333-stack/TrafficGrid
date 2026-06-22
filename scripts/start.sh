@@ -13,11 +13,24 @@ echo "MODEL_DIR: ${MODEL_DIR:-not set}"
 echo "Contents of /app/dist: $(ls /app/dist 2>/dev/null || echo 'NOT FOUND')"
 echo "==========================="
 
-echo "Initializing database..."
-python scripts/init_db.py || echo "WARNING: Database initialization failed."
+if [ -n "${DATABASE_URL:-}" ]; then
+  # Render's free Postgres can take a while to accept connections on a cold
+  # deploy. Wait for it before touching the schema so init never silently
+  # no-ops and leaves the app serving 500s against missing tables.
+  echo "Waiting for database to accept connections..."
+  python scripts/wait_for_db.py --timeout 120 || echo "WARNING: database not ready; continuing."
 
-echo "Seeding feedback data..."
-python -m backend.data.seed_feedback --rows 40 || echo "Feedback seeding skipped."
+  echo "Initializing database schema..."
+  python scripts/init_db.py || echo "WARNING: schema init failed; app will retry on startup."
+
+  echo "Loading Astram event data (idempotent; skips if already populated)..."
+  python scripts/load_events.py || echo "WARNING: event data load skipped."
+
+  echo "Seeding feedback data..."
+  python -m backend.data.seed_feedback --rows 40 || echo "Feedback seeding skipped."
+else
+  echo "DATABASE_URL not set; skipping database initialization."
+fi
 
 python -m backend.ml.bootstrap_models
 python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()"

@@ -32,3 +32,6 @@ htmlcov/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Local Claude preview/launch config
+.claude/

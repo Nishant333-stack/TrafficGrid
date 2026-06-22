@@ -6,28 +6,35 @@ from pathlib import Path
 from typing import Any
 
 from backend.config.env_loader import load_project_env
+from backend.config.paths import PROJECT_ROOT
 
 
 load_project_env()
 
 
-APP_ROOT = Path(__file__).resolve().parent
+def model_dir() -> Path:
+    """Resolve the active model directory the same way predict.py does."""
+    raw = os.environ.get("MODEL_DIR")
+    return Path(raw) if raw else (PROJECT_ROOT / "models")
 
 
-def artifact_exists(relative_path: str) -> bool:
-    return (APP_ROOT / relative_path).exists()
+def artifact_exists(path: Path) -> bool:
+    return path.exists()
 
 
 def platform_health(database_connected: bool, integration_count: int) -> dict[str, Any]:
     database_configured = bool(os.environ.get("DATABASE_URL"))
+    models = model_dir()
+    # The demo/full road graph caches live next to the road_graph module.
+    from backend.geo.road_graph import DEFAULT_CACHE_PATH, DEMO_CACHE_PATH
+
     artifacts = {
-        "severity_model": artifact_exists("models/severity_model.pkl"),
-        "duration_q25_model": artifact_exists("models/duration_q25_model.pkl"),
-        "duration_q50_model": artifact_exists("models/duration_q50_model.pkl"),
-        "duration_q75_model": artifact_exists("models/duration_q75_model.pkl"),
-        "risk_density": artifact_exists("models/risk_density.parquet"),
-        "road_graph_cache": artifact_exists("graph_cache/bengaluru_drive_graph.pkl")
-        or artifact_exists("graph_cache/bengaluru_demo_graph.pkl"),
+        "severity_model": artifact_exists(models / "severity_model.pkl"),
+        "duration_q25_model": artifact_exists(models / "duration_q25_model.pkl"),
+        "duration_q50_model": artifact_exists(models / "duration_q50_model.pkl"),
+        "duration_q75_model": artifact_exists(models / "duration_q75_model.pkl"),
+        "risk_density": artifact_exists(models / "risk_density.parquet"),
+        "road_graph_cache": artifact_exists(DEFAULT_CACHE_PATH) or artifact_exists(DEMO_CACHE_PATH),
     }
     healthy = all(artifacts.values()) and (database_connected or not database_configured)
     return {

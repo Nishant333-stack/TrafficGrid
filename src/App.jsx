@@ -640,7 +640,8 @@ function DetailDrawer({
             {controlPoints.length === 0 ? (
               <p className="muted">No control spot returned for this event.</p>
             ) : (
-              controlPoints.map((point, index) => {
+              <div className="control-point-cards">
+                {controlPoints.map((point, index) => {
                 const pointAllocations = allocations.filter(
                   (allocation) => String(allocation.control_point_node_id) === String(point.node_id),
                 );
@@ -673,7 +674,8 @@ function DetailDrawer({
                     <small>{point.selection_method || "junction"} · node {point.node_id}</small>
                   </article>
                 );
-              })
+                })}
+              </div>
             )}
           </div>
 
@@ -769,6 +771,7 @@ function App() {
   const [activeEvents, setActiveEvents] = useState([]);
   const [plannedEvents, setPlannedEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [forecast, setForecast] = useState(null);
   const [plan, setPlan] = useState(null);
   const [loadingForecast, setLoadingForecast] = useState(false);
@@ -791,6 +794,8 @@ function App() {
     overlays: L.layerGroup(),
     routes: L.layerGroup(),
   });
+  const markersByIdRef = useRef(new Map());
+  const recommendationsRef = useRef(null);
 
   const highlightedPlannedId = useMemo(() => {
     if (!plannedEvents.length) return null;
@@ -875,6 +880,62 @@ function App() {
       }
     },
     [showToast]
+  );
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    const pool = [
+      ...activeEvents.map((event) => ({ ...event, source: "active" })),
+      ...plannedEvents.map((event) => ({ ...event, source: "planned" })),
+    ];
+    const scored = [];
+    for (const event of pool) {
+      const name = (event.name || event.event_cause || "").toLowerCase();
+      const corridor = (event.corridor || "").toLowerCase();
+      // "Non-corridor" is a sentinel for "no road"; ignore it (it also happens
+      // to contain the substring "corr", which would create false matches).
+      const road = corridor === "non-corridor" ? "" : corridor;
+      const address = (event.address || "").toLowerCase();
+      const matchesName = name.includes(q);
+      const matchesRoad = road.includes(q);
+      const matchesAddress = address.includes(q);
+      if (!matchesName && !matchesRoad && !matchesAddress) continue;
+      // Rank: prefix match on name/road first, then other name/road hits,
+      // then address-only matches.
+      let score = 2;
+      if (name.startsWith(q) || road.startsWith(q)) score = 0;
+      else if (matchesName || matchesRoad) score = 1;
+      scored.push({ event, score });
+    }
+    scored.sort((a, b) => a.score - b.score);
+    return scored.slice(0, 8).map((item) => item.event);
+  }, [searchQuery, activeEvents, plannedEvents]);
+
+  const scrollToRecommendations = useCallback((delay = 300) => {
+    window.setTimeout(() => {
+      recommendationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, delay);
+  }, []);
+
+  const selectSearchResult = useCallback(
+    (event) => {
+      const lat = Number(event.latitude);
+      const lon = Number(event.longitude);
+      if (mapRef.current && Number.isFinite(lat) && Number.isFinite(lon)) {
+        // Zoom in on the searched event and pop its label so it's easy to spot.
+        mapRef.current.setView([lat, lon], 16, { animate: true });
+        const marker = markersByIdRef.current.get(markerEventId(event));
+        if (marker?.openTooltip) {
+          window.setTimeout(() => marker.openTooltip(), 350);
+        }
+      }
+      fetchForecast(event);
+      setSearchQuery("");
+      // Give the map a beat to fly to the event, then reveal recommendations.
+      scrollToRecommendations(900);
+    },
+    [fetchForecast, scrollToRecommendations]
   );
 
   const fetchPlan = useCallback(async () => {
@@ -1049,6 +1110,7 @@ function App() {
     if (!map) return;
     const markerLayer = layersRef.current.markers;
     markerLayer.clearLayers();
+    markersByIdRef.current.clear();
 
     activeEvents.forEach((event) => {
       if (event.latitude == null || event.longitude == null) return;
@@ -1060,8 +1122,12 @@ function App() {
         weight: 2.5,
       });
       marker.bindTooltip(`${event.event_cause || "Active event"} · ${event.priority || "Priority pending"}`);
-      marker.on("click", () => fetchForecast({ ...event, source: "active" }));
+      marker.on("click", () => {
+        fetchForecast({ ...event, source: "active" });
+        scrollToRecommendations();
+      });
       marker.addTo(markerLayer);
+      markersByIdRef.current.set(markerEventId(event), marker);
     });
 
     plannedEvents.forEach((event) => {
@@ -1072,10 +1138,14 @@ function App() {
         zIndexOffset: isHighlighted ? 800 : 400,
       });
       marker.bindTooltip(`${event.name} · ${formatTime(eventScheduledStart(event))}`);
-      marker.on("click", () => fetchForecast({ ...event, source: "planned" }));
+      marker.on("click", () => {
+        fetchForecast({ ...event, source: "planned" });
+        scrollToRecommendations();
+      });
       marker.addTo(markerLayer);
+      markersByIdRef.current.set(markerEventId(event), marker);
     });
-  }, [activeEvents, plannedEvents, highlightedPlannedId, fetchForecast]);
+  }, [activeEvents, plannedEvents, highlightedPlannedId, fetchForecast, scrollToRecommendations]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1181,7 +1251,7 @@ function App() {
       <header className="top-bar">
         <div>
           <h1>Bengaluru Traffic Command</h1>
-          <span>Central Zone 1</span>
+          <span>City-wide · {formatNumber(metrics.active_incident_count)} active · {formatNumber(plannedEvents.length)} planned</span>
         </div>
         <div className="top-status">
           <a className="field-link" href="field">Field view</a>
@@ -1228,6 +1298,36 @@ function App() {
         <div className="map-panel">
           <div className="map-toolbar">
             <TimelineToggle value={timeline} onChange={handleTimelineChange} />
+            <div className="map-search">
+              <input
+                type="search"
+                className="map-search-input"
+                placeholder="Search event name or road..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                aria-label="Search events by name or road"
+              />
+              {searchResults.length > 0 && (
+                <ul className="map-search-results" role="listbox">
+                  {searchResults.map((result) => (
+                    <li key={`${result.source}-${markerEventId(result)}`}>
+                      <button type="button" onClick={() => selectSearchResult(result)}>
+                        <strong>{markerTitle(result)}</strong>
+                        <span>
+                          {result.corridor || "Non-corridor"} ·{" "}
+                          {result.source === "planned" ? "Planned" : "Active"}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {searchQuery.trim().length >= 2 && searchResults.length === 0 && (
+                <ul className="map-search-results" role="listbox">
+                  <li className="map-search-empty">No matching event or road</li>
+                </ul>
+              )}
+            </div>
             <div className="timeline-focus">
               <span>Demo focus</span>
               <strong>{timelineEvent ? timelineEvent.name : "No planned event"}</strong>
@@ -1273,27 +1373,29 @@ function App() {
           </div>
         </div>
 
-        <DetailDrawer
-          selectedEvent={selectedEvent}
-          forecast={forecast}
-          plan={plan}
-          loadingForecast={loadingForecast}
-          loadingPlan={loadingPlan}
-          selectedRouteRank={selectedRouteRank}
-          planReady={selectedEvent ? prefetchedPlanIds.has(markerEventId(selectedEvent)) : false}
-          planPreparing={selectedEvent ? preparingPlanIds.has(markerEventId(selectedEvent)) : false}
-          feedbackSubmitting={feedbackSubmitting}
-          onClose={() => {
-            setSelectedEvent(null);
-            setForecast(null);
-            setPlan(null);
-            setSelectedRouteRank(null);
-          }}
-          onGetPlan={fetchPlan}
-          onSelectRoute={setSelectedRouteRank}
-          onAccept={() => postFeedback({ accepted: true, plan }, "Plan accepted")}
-          onAdjust={(adjusted) => postFeedback({ accepted: false, adjusted_personnel: adjusted, plan }, "Adjustment submitted")}
-        />
+        <div ref={recommendationsRef} className="recommendations-wrap">
+          <DetailDrawer
+            selectedEvent={selectedEvent}
+            forecast={forecast}
+            plan={plan}
+            loadingForecast={loadingForecast}
+            loadingPlan={loadingPlan}
+            selectedRouteRank={selectedRouteRank}
+            planReady={selectedEvent ? prefetchedPlanIds.has(markerEventId(selectedEvent)) : false}
+            planPreparing={selectedEvent ? preparingPlanIds.has(markerEventId(selectedEvent)) : false}
+            feedbackSubmitting={feedbackSubmitting}
+            onClose={() => {
+              setSelectedEvent(null);
+              setForecast(null);
+              setPlan(null);
+              setSelectedRouteRank(null);
+            }}
+            onGetPlan={fetchPlan}
+            onSelectRoute={setSelectedRouteRank}
+            onAccept={() => postFeedback({ accepted: true, plan }, "Plan accepted")}
+            onAdjust={(adjusted) => postFeedback({ accepted: false, adjusted_personnel: adjusted, plan }, "Adjustment submitted")}
+          />
+        </div>
       </section>
 
       <Toast toast={toast} />
