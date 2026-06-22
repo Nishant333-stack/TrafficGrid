@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import ssl
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +16,27 @@ from zoneinfo import ZoneInfo
 APP_ROOT = Path(__file__).resolve().parent
 INTEGRATION_DIR = APP_ROOT / "integrations"
 LOCAL_TZ = ZoneInfo("Asia/Kolkata")
+
+# Live weather (Open-Meteo: free, no API key). Bengaluru by default; overridable.
+WEATHER_LAT = float(os.environ.get("WEATHER_LAT", "12.9716"))
+WEATHER_LON = float(os.environ.get("WEATHER_LON", "77.5946"))
+WEATHER_TTL_SECONDS = float(os.environ.get("WEATHER_TTL_SECONDS", "600"))
+WEATHER_TIMEOUT_SECONDS = float(os.environ.get("WEATHER_TIMEOUT_SECONDS", "4"))
+_WEATHER_CACHE: dict[str, Any] = {"fetched_at": 0.0, "data": None, "mode": "fixture"}
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    """Verified TLS context using certifi's CA bundle.
+
+    Works even on slim images that lack a system CA store. Falls back to the
+    default context if certifi is unavailable.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -170,11 +196,62 @@ def gps_speed_feed() -> list[dict[str, Any]]:
     ]
 
 
-def weather_feed() -> dict[str, Any]:
-    configured = read_json_feed("weather.json")
-    if configured:
-        return configured[0]
+def _rain_intensity(rainfall_mm_1h: float) -> str:
+    if rainfall_mm_1h <= 0.1:
+        return "none"
+    if rainfall_mm_1h < 2.5:
+        return "light"
+    if rainfall_mm_1h < 7.6:
+        return "moderate"
+    return "heavy"
 
+
+def _live_weather_enabled() -> bool:
+    return os.environ.get("LIVE_WEATHER", "true").strip().lower() not in {"false", "0", "no", "off"}
+
+
+def _fetch_live_weather() -> dict[str, Any] | None:
+    """Fetch current rainfall for the configured point from Open-Meteo.
+
+    Keyless and free. Returns None on any failure so callers fall back to the
+    static fixture; never raises into the request path.
+    """
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={WEATHER_LAT}&longitude={WEATHER_LON}"
+        "&current=precipitation,rain,weather_code"
+        "&timezone=Asia%2FKolkata"
+    )
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "TrafficGrid/1.0"})
+        with urllib.request.urlopen(
+            request, timeout=WEATHER_TIMEOUT_SECONDS, context=_ssl_context()
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    current = payload.get("current") or {}
+    rainfall = current.get("precipitation")
+    if rainfall is None:
+        rainfall = current.get("rain", 0.0)
+    try:
+        rainfall_mm_1h = max(0.0, float(rainfall))
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "source": "open_meteo_live",
+        "rainfall_mm_1h": round(rainfall_mm_1h, 2),
+        "rainfall_intensity": _rain_intensity(rainfall_mm_1h),
+        "flood_risk": round(min(1.0, rainfall_mm_1h / 25.0), 2),
+        "road_surface": "wet" if rainfall_mm_1h > 0.1 else "dry",
+        "observed_at": current.get("time") or now_ist().isoformat(),
+        "location": {"latitude": WEATHER_LAT, "longitude": WEATHER_LON},
+    }
+
+
+def _fixture_weather() -> dict[str, Any]:
     return {
         "source": "weather_rain_flood_feed",
         "rainfall_mm_1h": 12.4,
@@ -183,6 +260,32 @@ def weather_feed() -> dict[str, Any]:
         "road_surface": "wet",
         "observed_at": now_ist().isoformat(),
     }
+
+
+def weather_feed() -> dict[str, Any]:
+    # Operator-supplied override file wins, for offline demos / pinned scenarios.
+    configured = read_json_feed("weather.json")
+    if configured:
+        _WEATHER_CACHE.update(fetched_at=time.monotonic(), data=configured[0], mode="fixture_file")
+        return configured[0]
+
+    if not _live_weather_enabled():
+        return _fixture_weather()
+
+    # Serve cached live data within the TTL to avoid hitting the API per request.
+    age = time.monotonic() - _WEATHER_CACHE["fetched_at"]
+    if _WEATHER_CACHE["data"] is not None and _WEATHER_CACHE["mode"] == "live" and age < WEATHER_TTL_SECONDS:
+        return _WEATHER_CACHE["data"]
+
+    live = _fetch_live_weather()
+    if live is not None:
+        _WEATHER_CACHE.update(fetched_at=time.monotonic(), data=live, mode="live")
+        return live
+
+    # Network failed: reuse a recent live reading if we have one, else fixture.
+    if _WEATHER_CACHE["data"] is not None and _WEATHER_CACHE["mode"] == "live":
+        return _WEATHER_CACHE["data"]
+    return _fixture_weather()
 
 
 def sensor_counts() -> list[dict[str, Any]]:
@@ -305,23 +408,27 @@ def all_feed_records() -> dict[str, Any]:
 
 def integration_status() -> list[dict[str, Any]]:
     observed = datetime.now(UTC)
+    # Refresh weather so its reported mode (live vs fixture) is current.
+    weather_feed()
+    weather_mode = "live_api" if _WEATHER_CACHE.get("mode") == "live" else "local_adapter"
+    weather_age = int(max(0.0, time.monotonic() - _WEATHER_CACHE.get("fetched_at", 0.0)))
     feeds = [
-        ("ASTraM live incidents", "incident", len(live_incidents())),
-        ("Planned permits", "permit", len(planned_permits())),
-        ("Fleet GPS speeds", "mobility", len(gps_speed_feed())),
-        ("Weather/rain/flooding", "weather", 1),
-        ("CCTV/ANPR counts", "sensor", len(sensor_counts())),
-        ("Officer mobile status", "field", len(officer_statuses())),
-        ("Public advisories", "advisory", len(advisories())),
+        ("ASTraM live incidents", "incident", "local_adapter", len(live_incidents()), 0),
+        ("Planned permits", "permit", "local_adapter", len(planned_permits()), 0),
+        ("Fleet GPS speeds", "mobility", "local_adapter", len(gps_speed_feed()), 0),
+        ("Weather/rain/flooding", "weather", weather_mode, 1, weather_age),
+        ("CCTV/ANPR counts", "sensor", "local_adapter", len(sensor_counts()), 0),
+        ("Officer mobile status", "field", "local_adapter", len(officer_statuses()), 0),
+        ("Public advisories", "advisory", "local_adapter", len(advisories()), 0),
     ]
     return [
         FeedStatus(
             name=name,
             category=category,
-            mode="local_adapter",
+            mode=mode,
             records=records,
             last_seen=observed.isoformat(),
-            freshness_seconds=0,
+            freshness_seconds=freshness,
         ).as_dict()
-        for name, category, records in feeds
+        for name, category, mode, records, freshness in feeds
     ]
