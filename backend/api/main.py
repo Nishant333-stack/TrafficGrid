@@ -869,11 +869,17 @@ def db_metrics_summary(engine: Engine) -> dict[str, Any]:
             )
         ).mappings().all()
 
-    personnel = sum(
-        int(row.get("adjusted_personnel") or row.get("plan_total_personnel") or 0)
-        for row in personnel_rows
-        if str(row.get("event_id")) in active_ids
-    )
+    # Count each active event's accepted plan once (latest row wins) so the
+    # deployed total equals the sum of accepted plans' personnel and increments
+    # by exactly a plan's personnel when its plan is accepted.
+    personnel_by_event: dict[str, int] = {}
+    for row in personnel_rows:
+        event_id = str(row.get("event_id"))
+        if event_id in active_ids:
+            personnel_by_event[event_id] = int(
+                row.get("adjusted_personnel") or row.get("plan_total_personnel") or 0
+            )
+    personnel = sum(personnel_by_event.values())
     active_total = int(active_count)
     if ACTIVE_EVENT_INCLUDE_DEMO_FEEDS:
         active_total += len(live_incidents())
