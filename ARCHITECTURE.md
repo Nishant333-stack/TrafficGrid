@@ -57,7 +57,7 @@ flowchart TB
 
     osm["OpenStreetMap<br/>(OSMnx / Overpass)"]
     weather["Open-Meteo<br/>(live weather, keyless)"]
-    incidents["TomTom / MapQuest<br/>(live incidents, keyed)"]
+    incidents["Live incident provider<br/>(optional, pluggable key slot)"]
     astram["Astram CSV export<br/>(historical incidents)"]
 
     commander -->|"REST + WS"| api
@@ -415,20 +415,22 @@ flowchart TB
         i["live_incidents()"]
         s["gps_speed_feed / sensor_counts"]
     end
-    w -->|live, keyless| om["Open-Meteo<br/>per-event rainfall/wind"]
-    w -.->|on failure| wf["fixture"]
-    i -->|"if TOMTOM_API_KEY"| tt["TomTom incidents"]
-    i -->|"else if MAPQUEST_API_KEY"| mq["MapQuest incidents"]
-    i -.->|"else / failure"| inf["fixtures"]
+    w -->|"opt-in (LIVE_WEATHER), keyless"| om["Open-Meteo<br/>per-event rainfall/wind"]
+    w -.->|"default / on failure"| wf["fixture"]
+    i -->|"if live-incident key configured"| live["live incident provider"]
+    i -.->|"default / failure"| inf["fixtures"]
     s -.-> sf["fixtures (paid sources)"]
 ```
 
 | Feed | Source | Status |
 |------|--------|--------|
-| Weather | Open-Meteo | **Live**, keyless, per incident location (rainfall, wind, conditions) → drives delay/flood factors |
-| Incidents | TomTom *or* MapQuest | **Live with an API key**; realistic fixtures otherwise |
+| Weather | Open-Meteo | **Opt-in** (`LIVE_WEATHER=true`), keyless, per incident location → drives delay/flood factors; fixtures by default |
+| Incidents | Pluggable provider | Realistic fixtures by default; integrations layer exposes a configurable live-incident API-key slot |
 | GPS speeds | — | Fixture (real source needs a paid API) |
 | CCTV/ANPR counts | — | Fixture (needs integration) |
+
+> Live external fetches are opt-in so the deployed server makes no blocking
+> network calls in request paths (a key reason for prior health-check timeouts).
 
 Live values are TTL-cached per coordinate and fetched with verified TLS (certifi) and short timeouts so they never block the request path.
 
@@ -548,7 +550,7 @@ Signature-based keys mean a forecast is recomputed only when the event materiall
 | Geospatial | OSMnx, NetworkX (A\*), haversine utilities |
 | Data | PostgreSQL 15, SQLAlchemy 2, pandas |
 | Frontend | React 18, Vite, Leaflet |
-| Live data | Open-Meteo (weather), TomTom / MapQuest (incidents) |
+| Live data | Open-Meteo (weather, opt-in); pluggable live-incident provider (fixtures by default) |
 | Deploy | Docker (multi-stage), Render Blueprint |
 
 ---

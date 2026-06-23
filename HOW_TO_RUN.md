@@ -26,11 +26,14 @@ The app reads configuration from environment variables (or a local `.env`):
 | `MODEL_DIR` | Trained model artifacts | `./models` (local) / `/app/models` (Docker) |
 | `ROAD_GRAPH_MODE` | `demo` = offline grid (fast, fake roads); `live` = real OSM graph | `demo` (local) / `live` (Docker) |
 | `ACTIVE_EVENT_INCLUDE_DEMO_FEEDS` | Blend synthetic "live" incidents | `true` |
-| `LIVE_WEATHER` | Fetch real rainfall/wind from Open-Meteo (keyless) per event location | `true` |
-| `TOMTOM_API_KEY` | If set, live traffic incidents come from TomTom (needs Traffic API enabled); else fixtures | _(unset)_ |
-| `MAPQUEST_API_KEY` | Alternative live-incident provider (free dev tier, usually no card); used if TomTom is unset/unavailable | _(unset)_ |
+| `LIVE_WEATHER` | Opt-in: fetch real per-event rainfall/wind from Open-Meteo (keyless). Off by default → fixtures | `false` |
 | `INCIDENTS_BBOX` | bbox `minLon,minLat,maxLon,maxLat` for incident queries | Bengaluru |
 | `PORT` | Server port (Render sets this) | `8000` |
+
+> Traffic incidents use realistic **fixtures by default**. The integrations layer
+> includes a configurable slot to plug in a live-incident API provider; with no
+> key set, fixtures are served. Live external fetches are opt-in to keep the
+> deployed server free of blocking calls in request paths.
 
 ## Post-event learning (retrain loop)
 

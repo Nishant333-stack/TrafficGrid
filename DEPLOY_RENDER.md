@@ -64,9 +64,11 @@ or change in the service's **Environment** tab:
 | `WEB_CONCURRENCY` | Gunicorn workers (free tier: keep at 1) | `1` |
 | `ACTIVE_EVENT_INCLUDE_DEMO_FEEDS` | Blend synthetic "live" incidents | `true` |
 | `LIVE_WEATHER` | Real per-event rainfall/wind from Open-Meteo (keyless) | `true` |
-| `TOMTOM_API_KEY` | Live incidents from TomTom (needs Traffic API enabled) | _(unset)_ |
-| `MAPQUEST_API_KEY` | Live incidents from MapQuest (free dev tier) | _(unset)_ |
 | `INCIDENTS_BBOX` | `minLon,minLat,maxLon,maxLat` for incident queries | Bengaluru |
+
+> Live traffic incidents use realistic **fixtures by default**. The integrations
+> layer provides a configurable slot to plug in a live-incident API provider;
+> when no key is configured the fixtures are served.
 
 **Live feeds are optional.** With no incident key the app uses realistic
 fixtures; weather is genuinely live out of the box (no key needed).
@@ -125,8 +127,8 @@ The job runs in the background and hot-reloads the models — no restart needed.
 - **Build is very slow / times out** → set `ROAD_GRAPH_MODE=demo` and redeploy.
 - **App boots but dashboard is empty** → check logs for the DB init/load step;
   confirm `DATABASE_URL` is wired (it is, via the Blueprint).
-- **Incident markers look static** → no incident API key is set (expected; that's
-  the fixture fallback). Add `TOMTOM_API_KEY` or `MAPQUEST_API_KEY` to go live.
+- **Incident markers look static** → expected: incidents use fixtures by default.
+  Wire a live-incident provider via the integrations layer's API-key slot to go live.
 - **First request after a cold start is slow** → Render's free tier spins the
   service down when idle; the first hit wakes it.
 - **500s right after deploy** → the DB may still be warming up; `start.sh` waits,

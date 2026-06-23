@@ -29,6 +29,7 @@ load_project_env()
 from backend.optimization.generate_plan import generate_deployment_plan
 from backend.integrations.integrations import (
     all_feed_records,
+    integration_feed_count,
     integration_status,
     live_incidents,
     operational_context_for_event,
@@ -1076,9 +1077,15 @@ def database_connected() -> bool:
 
 @app.get("/platform/health")
 def get_platform_health() -> dict[str, Any]:
+    # Keep this cheap: no live integration/weather fetches and a guarded DB ping,
+    # so the platform health check always responds well within Render's timeout.
+    try:
+        connected = database_connected()
+    except Exception:
+        connected = False
     health = platform_health(
-        database_connected=database_connected(),
-        integration_count=len(integration_status()),
+        database_connected=connected,
+        integration_count=integration_feed_count(),
     )
     health["database_error"] = _engine_error
     return health
@@ -1379,14 +1386,17 @@ async def websocket_live(websocket: WebSocket) -> None:
     try:
         while True:
             try:
-                events = active_events()
+                # Run the blocking DB/feed work in a thread so a single uvicorn
+                # worker's event loop stays free to serve the health check.
+                events = await asyncio.to_thread(active_events)
+                metrics = await asyncio.to_thread(metrics_summary)
                 active_ids = {str(event["id"]) for event in events}
                 newly_active = [
                     event for event in events if str(event["id"]) not in previous_active_ids
                 ]
                 await websocket.send_json(
                     {
-                        "metrics": metrics_summary(),
+                        "metrics": metrics,
                         "newly_active_events": newly_active,
                         "sent_at": datetime.now(UTC).isoformat(),
                     }

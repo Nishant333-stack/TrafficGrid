@@ -115,7 +115,7 @@ POST /models/retrain ── train_models.py ── feedback-corrected labels →
 | Geospatial | OSMnx + NetworkX (road graphs, A\* routing), PostGIS, haversine utils |
 | Data | PostgreSQL 15, SQLAlchemy 2, pandas |
 | Frontend | React 18, Vite, Leaflet, vanilla CSS |
-| Live data | Open-Meteo (weather, keyless), TomTom / MapQuest (incidents, keyed) |
+| Live data | Open-Meteo (weather, keyless); pluggable live-incident provider (fixtures by default) |
 | Deploy | Docker (multi-stage), Render Blueprint (`render.yaml`) |
 
 ---
@@ -230,8 +230,8 @@ Honest status of each feed (`backend/integrations/integrations.py`). All degrade
 
 | Feed | Source | Status |
 |------|--------|--------|
-| **Weather** | Open-Meteo | ✅ **Live**, keyless, fetched **per incident location** (rainfall, wind, conditions) |
-| **Traffic incidents** | TomTom *or* MapQuest | ✅ **Live with an API key** (`TOMTOM_API_KEY` / `MAPQUEST_API_KEY`); realistic fixtures otherwise |
+| **Weather** | Open-Meteo | **Opt-in** (`LIVE_WEATHER=true`), keyless, fetched **per incident location**; fixtures by default |
+| **Traffic incidents** | Pluggable provider | Realistic fixtures by default; the integrations layer exposes a configurable **live-incident API-key slot** to plug in a provider |
 | GPS corridor speeds | — | Fixture (real source requires a paid API) |
 | CCTV / ANPR counts | — | Fixture (real source requires integration) |
 

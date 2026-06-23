@@ -444,7 +444,9 @@ def _rain_intensity(rainfall_mm_1h: float) -> str:
 
 
 def _live_weather_enabled() -> bool:
-    return os.environ.get("LIVE_WEATHER", "true").strip().lower() not in {"false", "0", "no", "off"}
+    # Off by default for deploy stability (no external HTTP in request paths).
+    # Opt in explicitly with LIVE_WEATHER=true; otherwise the fixture is served.
+    return os.environ.get("LIVE_WEATHER", "false").strip().lower() in {"true", "1", "yes", "on"}
 
 
 def _weather_conditions(code: Any) -> str:
@@ -702,6 +704,15 @@ def all_feed_records() -> dict[str, Any]:
         "officer_statuses": officer_statuses(),
         "public_advisories": advisories(),
     }
+
+
+def integration_feed_count() -> int:
+    """Number of integration feeds, computed WITHOUT any live network calls.
+
+    Used by the health check, which must stay fast (no live weather/incident
+    fetches in the request path).
+    """
+    return 7
 
 
 def integration_status() -> list[dict[str, Any]]:
