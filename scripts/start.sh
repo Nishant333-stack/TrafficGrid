@@ -26,8 +26,8 @@ if [ -n "${DATABASE_URL:-}" ]; then
   echo "Loading Astram event data (idempotent; skips if already populated)..."
   python scripts/load_events.py || echo "WARNING: event data load skipped."
 
-  echo "Seeding feedback data..."
-  python -m backend.data.seed_feedback --rows 40 || echo "Feedback seeding skipped."
+  echo "Seeding feedback data (skipped if already present)..."
+  python -m backend.data.seed_feedback --rows 40 --skip-if-present || echo "Feedback seeding skipped."
 else
   echo "DATABASE_URL not set; skipping database initialization."
 fi
@@ -41,5 +41,5 @@ exec gunicorn main:app \
   --bind "0.0.0.0:${PORT:-10000}" \
   --workers "${WEB_CONCURRENCY:-1}" \
   --timeout "${GUNICORN_TIMEOUT:-120}" \
-  --graceful-timeout 30 \
+  --graceful-timeout "${GUNICORN_GRACEFUL_TIMEOUT:-10}" \
   --keep-alive 5

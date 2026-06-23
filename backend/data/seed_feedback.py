@@ -35,7 +35,25 @@ def parse_args() -> argparse.Namespace:
         description="Seed synthetic feedback rows for first-launch demo metrics."
     )
     parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
+    parser.add_argument(
+        "--skip-if-present",
+        action="store_true",
+        help="No-op if the feedback table already has rows (keeps cold starts fast)",
+    )
     return parser.parse_args()
+
+
+def feedback_count() -> int:
+    """Best-effort count of existing feedback rows (0 if the table/DB is unavailable)."""
+    try:
+        from sqlalchemy import text
+
+        from backend.config.db import get_engine
+
+        with get_engine().connect() as connection:
+            return int(connection.execute(text("SELECT count(*) FROM feedback")).scalar() or 0)
+    except Exception:
+        return 0
 
 
 def jsonable(value: Any) -> Any:
@@ -218,6 +236,12 @@ def seed_database(database_url: str, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    # Skip the whole (model-loading) seed path on warm reboots if data exists.
+    if args.skip_if_present:
+        existing = feedback_count()
+        if existing >= 20:
+            print(f"feedback already populated ({existing} rows); skipping seed.", flush=True)
+            return
     seed_event, forecast, plan = demo_plan()
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
