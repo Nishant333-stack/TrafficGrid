@@ -1,11 +1,9 @@
-import React from "react";
 import { createRoot } from "react-dom/client";
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
 import App from "./App.jsx";
 
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+// StrictMode intentionally omitted: its dev-only double-invoke of effects opens
+// then immediately tears down the /ws/live WebSocket, which surfaces as the
+// connection being dropped right after it opens.
+createRoot(document.getElementById("root")).render(<App />);

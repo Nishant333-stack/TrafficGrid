@@ -1238,7 +1238,6 @@ function App() {
     }
   }, [selectedEvent, forecast, plan, selectedRouteRank]);
 
-  const timelineEvent = plannedEvents.find((event) => event.id === highlightedPlannedId);
   const metricAccuracy = metrics.forecast_accuracy_30d == null ? "n/a" : `${formatNumber(metrics.forecast_accuracy_30d)}%`;
   const roiUtilization = `${Math.round((roiMetrics.personnel_utilization || 0) * 100)}%`;
   const roiAcceptance = `${Math.round((roiMetrics.plan_acceptance_rate || 0) * 100)}%`;
@@ -1327,10 +1326,6 @@ function App() {
                   <li className="map-search-empty">No matching event or road</li>
                 </ul>
               )}
-            </div>
-            <div className="timeline-focus">
-              <span>Demo focus</span>
-              <strong>{timelineEvent ? timelineEvent.name : "No planned event"}</strong>
             </div>
           </div>
           <div id="traffic-map" className="traffic-map" />
