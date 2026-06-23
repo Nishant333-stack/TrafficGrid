@@ -38,11 +38,13 @@ RUN python -m backend.ml.bootstrap_models \
     && python -c "from backend.geo.road_graph import cache_demo_graph; cache_demo_graph()"
 
 # Best-effort: pre-download the real Bengaluru OSM graph so diversions route
-# over real streets. Non-fatal -- if it can't complete in the build (slow/large
-# bbox, Overpass limits), the app still deploys and falls back to the demo grid
-# at runtime. Force demo-only fast builds with ROAD_GRAPH_MODE=demo.
-RUN python scripts/build_graph_cache.py \
-    || echo "WARN: real road graph not baked; runtime will use the demo grid"
+# over real streets. Hard time-bounded AND non-fatal -- a slow/large download or
+# Overpass stall can neither hang nor fail the build; the app still deploys and
+# falls back to the demo grid at runtime. Tune the cap with GRAPH_BUILD_TIMEOUT;
+# force a fast demo-only build with ROAD_GRAPH_MODE=demo.
+ENV GRAPH_BUILD_TIMEOUT=420
+RUN timeout "${GRAPH_BUILD_TIMEOUT}" python scripts/build_graph_cache.py \
+    || echo "WARN: real road graph not baked (timed out/failed); runtime uses the demo grid"
 
 RUN chmod +x scripts/start.sh
 
