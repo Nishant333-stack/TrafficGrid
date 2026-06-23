@@ -282,27 +282,43 @@ def parse_datetime(value: Any) -> datetime | None:
     return timestamp.to_pydatetime()
 
 
+def planned_events_from_seed() -> list[dict[str, Any]]:
+    """Bundled planned events, used when the database is unavailable."""
+    try:
+        seed = json.loads(PLANNED_EVENTS_PATH.read_text(encoding="utf-8"))
+        return [dict(event) for event in seed] if isinstance(seed, list) else []
+    except Exception:
+        return []
+
+
 def load_planned_events() -> list[dict[str, Any]]:
-    engine = get_engine()
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT * FROM events WHERE event_type = 'planned'"))
-        events = []
-        for r in result:
-            events.append({
-                "id": r.id,
-                "name": r.address,
-                "latitude": r.latitude,
-                "longitude": r.longitude,
-                "scheduled_start": r.start_datetime.isoformat() if r.start_datetime else None,
-                "event_cause": r.event_cause,
-                "corridor": r.corridor,
-                "zone": r.zone,
-                "police_station": r.police_station,
-                "veh_type": r.veh_type,
-                "priority": r.priority,
-            })
-        return events
+    # Degrade gracefully: if the DB is unset/unreachable, serve the bundled seed
+    # planned events instead of 500ing the dashboard.
+    try:
+        engine = get_engine()
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT * FROM events WHERE event_type = 'planned'"))
+            events = []
+            for r in result:
+                events.append({
+                    "id": r.id,
+                    "name": r.address,
+                    "latitude": r.latitude,
+                    "longitude": r.longitude,
+                    "scheduled_start": r.start_datetime.isoformat() if r.start_datetime else None,
+                    "event_cause": r.event_cause,
+                    "corridor": r.corridor,
+                    "zone": r.zone,
+                    "police_station": r.police_station,
+                    "veh_type": r.veh_type,
+                    "priority": r.priority,
+                })
+        if events:
+            return events
+    except Exception as exc:  # noqa: BLE001 - degrade rather than fail the request
+        print(f"load_planned_events: database unavailable, using seed file ({exc})", flush=True)
+    return planned_events_from_seed()
 
 
 def scheduled_start_value(event: dict[str, Any]) -> Any:
@@ -1278,8 +1294,31 @@ def get_metrics_summary() -> dict[str, Any]:
 
 @app.get("/metrics/roi")
 def get_metrics_roi() -> dict[str, Any]:
-    planned = [planned_event_response(event) for event in [*load_planned_events(), *planned_permits()]]
-    return jsonable(executive_roi_summary(active_events(), planned, feedback_rows_for_roi()))
+    # Never 500: degrade inputs, then guarantee a safe payload if the summary
+    # itself touches an unavailable backend.
+    try:
+        planned = [planned_event_response(event) for event in [*load_planned_events(), *planned_permits()]]
+        feedback = feedback_rows_for_roi()
+    except Exception as exc:  # noqa: BLE001
+        print(f"metrics/roi: degraded inputs due to backend error ({exc})", flush=True)
+        planned = [planned_event_response(event) for event in planned_events_from_seed()]
+        feedback = []
+    try:
+        return jsonable(executive_roi_summary(active_events(), planned, feedback))
+    except Exception as exc:  # noqa: BLE001
+        print(f"metrics/roi: returning safe defaults ({exc})", flush=True)
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "sample_count": 0,
+            "average_incident_duration_reduction_minutes": 0,
+            "deployment_time_saved_minutes": 0,
+            "personnel_utilization": 0,
+            "preventable_high_risk_corridors_detected": 0,
+            "plan_acceptance_rate": 0,
+            "citizen_delay_hours_avoided": 0,
+            "high_risk_corridors": [],
+            "degraded": True,
+        }
 
 
 @app.get("/metrics/operational")
