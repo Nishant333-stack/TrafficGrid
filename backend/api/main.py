@@ -405,7 +405,6 @@ def remember_value(cache: dict[str, tuple[float, dict[str, Any]]], key: str, val
 
 
 def active_events() -> list[dict[str, Any]]:
-    engine = get_engine()
     cutoff = datetime.now(UTC) - timedelta(days=ACTIVE_EVENT_LOOKBACK_DAYS) if ACTIVE_EVENT_LOOKBACK_DAYS else None
     date_filter = "AND start_datetime >= :cutoff" if cutoff else ""
     query = text(
@@ -434,9 +433,20 @@ def active_events() -> list[dict[str, Any]]:
     params = {"limit": ACTIVE_EVENT_LIMIT}
     if cutoff:
         params["cutoff"] = cutoff
-    with engine.connect() as connection:
-        rows = connection.execute(query, params).mappings().all()
-    db_events = [jsonable(dict(row)) for row in rows]
+    # Degrade gracefully: if the database is unset/unreachable (e.g. DATABASE_URL
+    # not yet wired, or the managed DB is warming up), serve live feeds instead
+    # of 500ing.
+    db_events: list[dict[str, Any]] = []
+    try:
+        engine = get_engine()
+        with engine.connect() as connection:
+            rows = connection.execute(query, params).mappings().all()
+        db_events = [jsonable(dict(row)) for row in rows]
+    except Exception as exc:  # noqa: BLE001 - degrade rather than fail the request
+        print(f"active_events: database unavailable, using live feeds only ({exc})", flush=True)
+        if not ACTIVE_EVENT_INCLUDE_DEMO_FEEDS:
+            return []
+
     if not ACTIVE_EVENT_INCLUDE_DEMO_FEEDS:
         return db_events
 
@@ -861,8 +871,21 @@ def db_metrics_summary(engine: Engine) -> dict[str, Any]:
 
 
 def metrics_summary() -> dict[str, Any]:
-    engine = get_engine()
-    return db_metrics_summary(engine)
+    # Degrade gracefully when the database is unset/unreachable so the dashboard
+    # shows zeros instead of 500ing.
+    try:
+        engine = get_engine()
+        return db_metrics_summary(engine)
+    except Exception as exc:  # noqa: BLE001 - degrade rather than fail the request
+        print(f"metrics_summary: database unavailable, returning zeros ({exc})", flush=True)
+        return {
+            "active_incident_count": len(live_incidents()) if ACTIVE_EVENT_INCLUDE_DEMO_FEEDS else 0,
+            "planned_events_today": 0,
+            "total_personnel_deployed": 0,
+            "forecast_accuracy_30d": None,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "degraded": True,
+        }
 
 
 def parse_plan_json(value: Any) -> dict[str, Any] | None:
@@ -1316,19 +1339,24 @@ async def websocket_live(websocket: WebSocket) -> None:
     previous_active_ids: set[str] = set()
     try:
         while True:
-            events = active_events()
-            active_ids = {str(event["id"]) for event in events}
-            newly_active = [
-                event for event in events if str(event["id"]) not in previous_active_ids
-            ]
-            await websocket.send_json(
-                {
-                    "metrics": metrics_summary(),
-                    "newly_active_events": newly_active,
-                    "sent_at": datetime.now(UTC).isoformat(),
-                }
-            )
-            previous_active_ids = active_ids
+            try:
+                events = active_events()
+                active_ids = {str(event["id"]) for event in events}
+                newly_active = [
+                    event for event in events if str(event["id"]) not in previous_active_ids
+                ]
+                await websocket.send_json(
+                    {
+                        "metrics": metrics_summary(),
+                        "newly_active_events": newly_active,
+                        "sent_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+                previous_active_ids = active_ids
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep the socket alive on transient errors
+                print(f"ws/live: skipped a tick due to backend error ({exc})", flush=True)
             await asyncio.sleep(5)
     except WebSocketDisconnect:
         return
